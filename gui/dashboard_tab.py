@@ -10,12 +10,17 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt
 from gui.widgets import MplCanvas
 
+# >>>> NEW IMPORT <<<<
+from gui.normalization_comparison_dialog import NormalizationComparisonDialog
+
+
 class DashboardTab(QWidget):
     """
     Summaries & analytics for the dataset:
       - Show class distribution
       - Analyze random images for intensity stats
       - Show histogram of intensities
+      - Compare different normalization methods (button to open a new dialog)
     """
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -60,13 +65,19 @@ class DashboardTab(QWidget):
         self.canvas = MplCanvas(self, width=5, height=4)
         main_layout.addWidget(self.canvas)
 
+        # >>>> NEW BUTTON <<<<
+        self.btn_compare_norm = QPushButton("Compare Normalizations")
+        self.btn_compare_norm.setToolTip("Opens a dialog to compare min-max vs z-score normalization on sample images.")
+        self.btn_compare_norm.clicked.connect(self.on_compare_normalization)
+        main_layout.addWidget(self.btn_compare_norm)
+
         self.setLayout(main_layout)
 
     def on_analyze(self):
         """
         1) Takes the chosen folder (e.g., "cleaned_data")
         2) Gathers class distribution (# images per class)
-        3) Loads a random subset of images (user-defined count) for intensity stats
+        3) Loads a random subset of images for intensity stats
         4) Plots a histogram of intensities
         5) Displays results in a log box
         """
@@ -103,32 +114,40 @@ class DashboardTab(QWidget):
             self.canvas.draw()
             return
 
-        intensities, widths, heights, error_count = self._collect_image_stats(sample_imgs)
+        intensities, _, _, error_count = self._collect_image_stats(sample_imgs)
 
         if error_count > 0:
             self.log_box.append(f"<b>There were {error_count} images that failed to load properly.</b>\n")
 
         # Step 4: If we do have intensities, compute more advanced stats
         if len(intensities) > 0:
-            self._display_image_stats(intensities, widths, heights)
+            self._display_image_stats(intensities)
             self._plot_histogram(intensities)
         else:
             self.log_box.append("<b>No valid intensities found; cannot plot histogram.</b>")
             self.canvas.figure.clear()
             self.canvas.draw()
 
+    def on_compare_normalization(self):
+        """
+        Opens a dialog that compares minmax vs zscore on a random sample
+        of images from the currently selected folder.
+        """
+        root_folder = self.folder_combo.currentText().strip()
+        if not os.path.isdir(root_folder):
+            QMessageBox.warning(self, "Invalid Folder", f"Path '{root_folder}' does not exist.")
+            return
+
+        dialog = NormalizationComparisonDialog(root_folder, parent=self)
+        dialog.exec_()
+
     def _compute_distribution(self, root_folder, subfolders):
-        """
-        Return a nested dict of {subset -> {class_name -> count}} and total_images
-        """
         distribution_info = {}
         total_images = 0
-
         for subset in subfolders:
             subset_path = os.path.join(root_folder, subset)
             if not os.path.isdir(subset_path):
                 continue
-
             class_list = [d for d in os.listdir(subset_path) if os.path.isdir(os.path.join(subset_path, d))]
             distribution_info[subset] = {}
             sub_sum = 0
@@ -137,15 +156,10 @@ class DashboardTab(QWidget):
                 num_images = sum(f.lower().endswith(('.png','.jpg','.jpeg')) for f in os.listdir(cpath))
                 distribution_info[subset][c] = num_images
                 sub_sum += num_images
-
             total_images += sub_sum
-
         return distribution_info, total_images
 
     def _gather_random_images(self, root_folder, subfolders, max_samples=30):
-        """
-        Return up to max_samples random images from the given dataset structure.
-        """
         all_imgs = []
         for subset in subfolders:
             subset_path = os.path.join(root_folder, subset)
@@ -157,78 +171,38 @@ class DashboardTab(QWidget):
                 images = [os.path.join(cpath, f) for f in os.listdir(cpath)
                           if f.lower().endswith(('.png','.jpg','.jpeg'))]
                 all_imgs.extend(images)
-
         random.shuffle(all_imgs)
         return all_imgs[:max_samples]
 
     def _collect_image_stats(self, image_paths):
-        """
-        Return a tuple:
-           intensities (list),
-           widths (list),
-           heights (list),
-           error_count (int)
-        """
         intensities = []
         widths = []
         heights = []
         error_count = 0
-
         for path in image_paths:
             try:
                 pil_img = Image.open(path).convert('L')
                 arr = np.array(pil_img, dtype=np.float32)
-                intensities.extend(arr.flatten())  # accumulate intensities
+                intensities.extend(arr.flatten())
                 widths.append(pil_img.width)
                 heights.append(pil_img.height)
-            except Exception as e:
+            except:
                 error_count += 1
-
         return intensities, widths, heights, error_count
 
-    def _display_image_stats(self, intensities, widths, heights):
-        """
-        Compute and display advanced stats: min, max, median, mean, std
-        for intensities and dimensions.
-        """
+    def _display_image_stats(self, intensities):
         intensities = np.array(intensities)
-        widths = np.array(widths, dtype=np.float32)
-        heights = np.array(heights, dtype=np.float32)
-
-        # Intensity stats
         i_min, i_max = intensities.min(), intensities.max()
         i_median = np.median(intensities)
         i_mean = intensities.mean()
         i_std = intensities.std()
-
-        # Dimension stats
-        w_min, w_max = widths.min(), widths.max()
-        w_median = np.median(widths)
-        w_mean = widths.mean()
-        w_std = widths.std()
-
-        h_min, h_max = heights.min(), heights.max()
-        h_median = np.median(heights)
-        h_mean = heights.mean()
-        h_std = heights.std()
 
         self.log_box.append("<b>--- Sampled Image Stats ---</b>\n")
         self.log_box.append("<b>Pixel Intensities</b>:")
         self.log_box.append(f"   Min: {i_min:.1f}, Max: {i_max:.1f}")
         self.log_box.append(f"   Median: {i_median:.2f}, Mean: {i_mean:.2f}, Std: {i_std:.2f}\n")
 
-        self.log_box.append("<b>Widths</b>:")
-        self.log_box.append(f"   Min: {w_min:.1f}, Max: {w_max:.1f}")
-        self.log_box.append(f"   Median: {w_median:.1f}, Mean: {w_mean:.1f}, Std: {w_std:.1f}\n")
-
-        self.log_box.append("<b>Heights</b>:")
-        self.log_box.append(f"   Min: {h_min:.1f}, Max: {h_max:.1f}")
-        self.log_box.append(f"   Median: {h_median:.1f}, Mean: {h_mean:.1f}, Std: {h_std:.1f}\n")
-
     def _plot_histogram(self, intensities):
-        """
-        Plot a histogram of pixel intensities onto the MplCanvas.
-        """
         self.canvas.figure.clear()
         ax = self.canvas.figure.add_subplot(111)
         ax.hist(intensities, bins=50, color='#0078d7', alpha=0.7)

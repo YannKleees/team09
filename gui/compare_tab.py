@@ -118,7 +118,7 @@ class CompareTab(QWidget):
         path_aug = self._locate_image(root_aug, base_name)
 
         self.canvas.figure.clear()
-        axarr = self.canvas.figure.subplots(1, 3, figsize=(12, 4))
+        axarr = self.canvas.figure.subplots(1, 3)
 
         self._plot_image(axarr[0], path_orig, "Original")
         self._plot_image(axarr[1], path_clean, "Cleaned")
