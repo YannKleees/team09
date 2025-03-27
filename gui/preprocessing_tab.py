@@ -1,7 +1,7 @@
 import os
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QLabel, QGroupBox, QHBoxLayout,
-    QLineEdit, QPushButton, QFormLayout, QCheckBox, QComboBox,
+    QWidget, QVBoxLayout, QLabel, QGroupBox, QFormLayout, QHBoxLayout,
+    QLineEdit, QPushButton, QCheckBox, QComboBox,
     QProgressBar, QMessageBox, QTextEdit
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
@@ -9,6 +9,10 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from logic.preprocessing import preprocess_entire_dataset
 
 class PreprocessingWorker(QThread):
+    """
+    QThread to handle the entire copying, resizing, normalization steps
+    without blocking the UI.
+    """
     progress = pyqtSignal(int, str)
     finished = pyqtSignal(dict, list, int)  # dist_info, error_log, total_processed
 
@@ -20,6 +24,9 @@ class PreprocessingWorker(QThread):
         self.delete_duplicates = delete_duplicates
 
     def run(self):
+        """
+        Perform the entire dataset preprocessing pipeline.
+        """
         try:
             self.progress.emit(0, "Copying dataset & preparing to preprocess...")
             dist_info, error_log, total_processed = preprocess_entire_dataset(
@@ -32,47 +39,54 @@ class PreprocessingWorker(QThread):
             self.progress.emit(100, "All done!")
             self.finished.emit(dist_info, error_log, total_processed)
         except Exception as e:
-            self.progress.emit(0, f"Error: {str(e)}")
-            self.finished.emit({}, [f"Error: {str(e)}"], 0)
+            msg = f"Error: {str(e)}"
+            self.progress.emit(0, msg)
+            self.finished.emit({}, [msg], 0)
 
 class PreprocessingTab(QWidget):
     """
-    A single page with:
-      - Project & group info
-      - Single-button approach to produce cleaned_data
-      - Distribution + error logs
+    Allows the user to:
+      1. Specify a raw dataset folder
+      2. Configure resizing & normalization
+      3. Optionally remove duplicates
+      4. Produce a 'cleaned_data' folder
     """
     def __init__(self, parent=None):
         super().__init__(parent)
         main_layout = QVBoxLayout(self)
 
-        # Intro + Group Info
         doc_label = QLabel(
-            "<b>Dataset Preprocessing</b><br>"
-            "Group Number: Group Ken9<br>"
-            "Members: Balázs Ács, Rayan Atieh, Rafal Dorsz, Valters Eglitis, Yann Klees, Ole Rotteveel<br><br>"
-            "Click one button to copy the raw dataset (Training & Testing),"
-            " optionally remove duplicates, then resize & normalize into <i>cleaned_data</i>.<br>"
-            "<b>Raw data remains untouched.</b>"
+            "<h3>Dataset Preprocessing</h3>"
+            "Group Ken9: Balázs Ács, Rayan Atieh, Rafal Dorsz, Valters Eglitis, Yann Klees, Ole Rotteveel<br>"
+            "<b>Steps:</b><br>"
+            "1) Copy the raw dataset (Training & Testing) to <i>cleaned_data</i>.<br>"
+            "2) (Optional) Remove duplicates.<br>"
+            "3) Resize & normalize images.<br>"
+            "Your original data remains untouched."
         )
         doc_label.setWordWrap(True)
         main_layout.addWidget(doc_label)
 
-        # A group box for user options
+        # Options Group
         opt_box = QGroupBox("Preprocessing Options")
         form_lay = QFormLayout()
 
         self.root_edit = QLineEdit("data/archive")
+        self.root_edit.setToolTip("Folder containing 'Training' & 'Testing' subfolders.")
 
         self.resize_combo = QComboBox()
         self.resize_combo.addItems(["128", "160", "224"])
+        self.resize_combo.setToolTip("Select target image size for resizing.")
 
         self.norm_combo = QComboBox()
         self.norm_combo.addItems(["minmax", "zscore"])
+        self.norm_combo.setToolTip("Choose normalization method.")
 
-        self.dup_chk = QCheckBox("Delete duplicates (in cleaned_data)?")
+        self.dup_chk = QCheckBox("Delete duplicates?")
+        self.dup_chk.setToolTip("If checked, duplicates are removed in cleaned_data before resizing.")
 
         self.btn_preprocess = QPushButton("Preprocess Entire Dataset")
+        self.btn_preprocess.setToolTip("Starts copying & normalizing the dataset into 'cleaned_data'.")
         self.btn_preprocess.clicked.connect(self.on_start_preprocessing)
 
         self.progress_bar = QProgressBar()
@@ -88,18 +102,19 @@ class PreprocessingTab(QWidget):
         opt_box.setLayout(form_lay)
         main_layout.addWidget(opt_box)
 
-        # Log area for distribution & errors
+        # Log area
         self.log_box = QTextEdit()
+        self.log_box.setToolTip("Detailed logs about distribution and errors.")
         self.log_box.setReadOnly(True)
         main_layout.addWidget(self.log_box)
 
-        self.worker = None
         self.setLayout(main_layout)
+        self.worker = None
 
     def on_start_preprocessing(self):
         root_folder = self.root_edit.text().strip()
         if not os.path.isdir(root_folder):
-            QMessageBox.warning(self, "Invalid Folder", f"{root_folder} is not valid.")
+            QMessageBox.warning(self, "Invalid Folder", f"'{root_folder}' is not a valid directory.")
             return
 
         resize_val = int(self.resize_combo.currentText())
@@ -122,30 +137,23 @@ class PreprocessingTab(QWidget):
         self.progress_bar.setFormat(msg)
 
     def on_worker_finished(self, dist_info, error_log, total_processed):
-        """
-        Show final distribution & any errors in log_box,
-        also finalize the progress bar.
-        """
         self.progress_bar.setValue(100)
         self.progress_bar.setFormat("Finished")
 
-        self.log_box.append(f"Total images processed: {total_processed}")
+        self.log_box.append(f"<b>Total images processed:</b> {total_processed}")
         if dist_info:
-            self.log_box.append("\n<b>Distribution in cleaned_data:</b>")
+            self.log_box.append("<br><b>Distribution in 'cleaned_data':</b>")
             for subset in ["Training", "Testing"]:
                 if subset in dist_info:
                     subset_dict = dist_info[subset]
                     if isinstance(subset_dict, dict):
-                        total_sub = 0
+                        sub_total = 0
                         for cls, cnt in subset_dict.items():
                             self.log_box.append(f"{subset}/{cls}: {cnt}")
-                            total_sub += cnt
-                        self.log_box.append(f"Subtotal in {subset}: {total_sub}\n")
+                            sub_total += cnt
+                        self.log_box.append(f"Subtotal in {subset}: {sub_total}\n")
 
         if error_log:
-            self.log_box.append("\n<b>Errors:</b>")
+            self.log_box.append("<b>Errors:</b>")
             for e in error_log:
                 self.log_box.append(e)
-
-        QMessageBox.information(self, "Done", "Preprocessing is complete!")
-
