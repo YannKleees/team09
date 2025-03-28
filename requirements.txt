@@ -1,7 +1,19 @@
-torch>=2.0.0
-torchvision>=0.15.0
-scikit-learn
-matplotlib
-seaborn
-streamlit
-Pillow
+# Core dependencies
+numpy==1.23.5
+Pillow==9.3.0
+
+# PyTorch & Vision (adjust versions for GPU vs CPU, if needed)
+torch==1.13.1
+torchvision==0.14.1
+
+# GUI
+PyQt5==5.15.7
+
+# Plotting
+matplotlib==3.6.2
+
+# Excel export in the NormalizationComparisonDialog
+openpyxl==3.0.10
+
+# Optionally:
+# pip install --upgrade pip setuptools wheel  # recommended
