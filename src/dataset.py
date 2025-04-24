@@ -4,7 +4,7 @@ from torch.utils.data import Dataset
 
 class BrainTumorDataset(Dataset):
     """
-    Expects a structure:
+    Expects structure:
       data_root/
          Training/
              ClassA/
@@ -12,6 +12,7 @@ class BrainTumorDataset(Dataset):
          Testing/
              ClassA/
              ClassB/
+    Each class folder has .png/.jpg images.
     """
     def __init__(self, root_dir, subset="Training", transform=None):
         super().__init__()

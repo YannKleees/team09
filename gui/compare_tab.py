@@ -1,3 +1,5 @@
+# File: gui/compare_tab.py
+
 import os
 import glob
 from PIL import Image
@@ -11,32 +13,39 @@ from PyQt5.QtCore import Qt
 from gui.widgets import MplCanvas
 from logic.comparison import load_image_as_grayscale
 
+
 class CompareTab(QWidget):
     """
-    Lets you browse images in a chosen dataset folder (Original, Cleaned, or Augmented),
-    then tries to find the same filename in the other sets to show them side by side.
+    Lets you browse images in a chosen dataset folder, then tries to find the
+    same filename in the other sets to show them side by side.
     """
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setLayout(QVBoxLayout())
 
         info_label = QLabel(
-            "<h3>Compare Raw vs. Cleaned vs. Augmented</h3>"
-            "Browse the same image filename across all three sets (if it exists)."
+            "<h3>Compare: Raw vs. Cleaned vs. Augmented</h3>"
+            "Browse to see the same image (by filename) across all three sets."
         )
         info_label.setWordWrap(True)
         self.layout().addWidget(info_label)
 
-        # Group box for folder selection + browsing
-        self.group_browse = QGroupBox("Browse Images by Class Folder")
-        g_layout = QHBoxLayout()
+        # -----------------------------------
+        # Browsing controls
+        # -----------------------------------
+        browse_group = QGroupBox("Image Navigation")
+        browse_layout = QHBoxLayout()
 
         self.dataset_combo = QComboBox()
         self.dataset_combo.setToolTip("Choose which dataset folder to scan.")
-        self.dataset_combo.addItems(["data/archive/Training", "cleaned_data/Training", "augmented_data/Training"])
+        self.dataset_combo.addItems([
+            "data/archive/Training",
+            "cleaned_data/Training",
+            "augmented_data/Training"
+        ])
 
         self.load_btn = QPushButton("Load Image List")
-        self.load_btn.setToolTip("Find all images (png/jpg/jpeg) in the selected folder.")
+        self.load_btn.setToolTip("Find all images in the selected folder (recursively).")
         self.load_btn.clicked.connect(self.on_load_images)
 
         self.prev_btn = QPushButton("Previous")
@@ -47,16 +56,20 @@ class CompareTab(QWidget):
         self.next_btn.setToolTip("Go to the next image in the list.")
         self.next_btn.clicked.connect(self.on_next_image)
 
-        for w in [self.dataset_combo, self.load_btn, self.prev_btn, self.next_btn]:
-            g_layout.addWidget(w)
-        self.group_browse.setLayout(g_layout)
-        self.layout().addWidget(self.group_browse)
+        browse_layout.addWidget(self.dataset_combo)
+        browse_layout.addWidget(self.load_btn)
+        browse_layout.addWidget(self.prev_btn)
+        browse_layout.addWidget(self.next_btn)
+        browse_group.setLayout(browse_layout)
+        self.layout().addWidget(browse_group)
 
+        # -----------------------------------
         # Canvas for side-by-side images
+        # -----------------------------------
         self.canvas = MplCanvas(self, width=10, height=4)
         self.layout().addWidget(self.canvas)
 
-        # Log
+        # Log area
         self.log_box = QTextEdit()
         self.log_box.setToolTip("Shows which files were found in each dataset.")
         self.log_box.setReadOnly(True)

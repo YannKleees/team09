@@ -1,109 +1,46 @@
-import random
-import torch
+# File: src/transforms_config.py
+
 import torchvision.transforms as T
-import torchvision.transforms.functional as F
-from torchvision.transforms import InterpolationMode
-
-def _normalize_minmax():
-    """
-    Min-max scale each image to [0..1].
-    """
-    def f(img_tensor):
-        min_val = img_tensor.min()
-        max_val = img_tensor.max()
-        if max_val - min_val > 1e-5:
-            img_tensor = (img_tensor - min_val) / (max_val - min_val)
-        else:
-            # If the image is basically constant, force all to 0
-            img_tensor = img_tensor - min_val
-        return img_tensor.clamp(0, 1)
-    return f
-
-def _normalize_zscore_rebound():
-    """
-    (1) Compute z-score (subtract mean, divide by std)
-    (2) Then re-scale the result to [0..1] so that
-        after standardizing, we don't have negative or >1 pixel values.
-
-    NOTE: This is not a "pure" z-score in the final pixel domain
-          because it is forcibly mapped back to [0..1].
-          It *does* keep the shape of a distribution, but clipped
-          and scaled into a [0..1] range for certain visualization or
-          neural net convenience.
-    """
-    def f(img_tensor):
-        mean_val = img_tensor.mean()
-        std_val = img_tensor.std()
-        if std_val < 1e-5:
-            std_val = 1.0
-
-        z = (img_tensor - mean_val) / std_val  # standard
-        # Re-scale to [0..1]
-        min_z = z.min()
-        max_z = z.max()
-        if max_z - min_z > 1e-5:
-            z = (z - min_z) / (max_z - min_z)
-        else:
-            z = z - min_z
-        return z.clamp(0, 1)
-    return f
-
-def _normalize_zscore_pure():
-    """
-    A "pure" z-score transform with no rebound to [0..1].
-    This means pixel values could be negative or above 1.
-    """
-    def f(img_tensor):
-        mean_val = img_tensor.mean()
-        std_val = img_tensor.std()
-        if std_val < 1e-5:
-            std_val = 1.0
-        z = (img_tensor - mean_val) / std_val
-        return z
-    return f
 
 def create_transform(
-    image_size=(128, 128),
-    normalization="zscore",  # can be 'zscore', 'minmax', or None
+    image_size=(128,128),
+    normalization="zscore",
     augment=False,
-    rotation_range=(0, 15),
-    brightness=(0.95, 1.05),
-    contrast=(0.95, 1.05),
-    pure_zscore=False
+    adv_aug=False,
+    strong_aug=False,
+    rotation_deg=0,            # [ADDED]
+    brightness_range=(1.0,1.0) # [ADDED]
 ):
     """
-    Create a torchvision transform pipeline:
-      - Resizing
-      - Optional augmentation
-      - Normalization = 'zscore', 'minmax', or None
-      - If 'pure_zscore=True' => no bounding to [0..1] after standardizing.
+    Build a transform pipeline with optional rotation_deg & brightness_range.
     """
-    transform_list = [
-        T.Resize(image_size, interpolation=InterpolationMode.LANCZOS),
-        T.ToTensor()
-    ]
+    transform_list = []
+
+    if not adv_aug:
+        transform_list.append(T.Resize(image_size))
 
     if augment:
-        transform_list.append(
-            T.RandomApply(
-                [T.RandomRotation(rotation_range, interpolation=InterpolationMode.BICUBIC)],
-                p=0.5
-            )
-        )
-        transform_list.append(T.ColorJitter(brightness=brightness, contrast=contrast))
+        if rotation_deg > 0:
+            transform_list.append(T.RandomRotation(degrees=rotation_deg))
+        # apply brightness_range if it's not (1.0,1.0)
+        if brightness_range != (1.0,1.0):
+            transform_list.append(T.ColorJitter(
+                brightness=brightness_range,
+                contrast=brightness_range
+            ))
 
-    # Handle normalization argument
-    if normalization is None:
-        # "No normalization" => do nothing more
-        pass
-    elif normalization == "zscore":
-        if pure_zscore:
-            transform_list.append(T.Lambda(_normalize_zscore_pure()))
-        else:
-            transform_list.append(T.Lambda(_normalize_zscore_rebound()))
+    if adv_aug:
+        transform_list.append(T.RandomResizedCrop(size=image_size, scale=(0.8,1.0)))
+
+    if strong_aug:
+        transform_list.append(T.RandomPerspective(distortion_scale=0.2, p=0.5))
+
+    transform_list.append(T.ToTensor())
+
+    if normalization == "zscore":
+        transform_list.append(T.Normalize(mean=[0.5], std=[0.5]))
     elif normalization == "minmax":
-        transform_list.append(T.Lambda(_normalize_minmax()))
-    else:
-        raise ValueError("Normalization must be 'zscore', 'minmax', or None")
+        transform_list.append(T.Normalize(mean=[0.5], std=[0.5]))
+    # else no normalization if "none"
 
     return T.Compose(transform_list)
