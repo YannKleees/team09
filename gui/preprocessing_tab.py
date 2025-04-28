@@ -1,9 +1,8 @@
-# File: gui/preprocessing_tab.py
-
 import os
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QLabel, QGroupBox, QFormLayout, QHBoxLayout,
-    QLineEdit, QPushButton, QCheckBox, QProgressBar, QMessageBox, QTextEdit
+    QWidget, QVBoxLayout, QLabel, QGroupBox, QFormLayout, QCheckBox,
+    QLineEdit, QPushButton, QProgressBar, QMessageBox, QTextEdit,
+    QHBoxLayout, QFileDialog, QComboBox
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
@@ -12,28 +11,50 @@ from logic.preprocessing import preprocess_entire_dataset
 
 class PreprocessingWorker(QThread):
     """
-    QThread to handle copying, resizing, and normalization
-    without blocking the UI.
+    QThread to handle copying, filtering (blur/sharpen), histogram eq,
+    resizing, etc. without blocking the UI.
     """
     progress = pyqtSignal(int, str)
     finished = pyqtSignal(dict, list, int)  # dist_info, error_log, total_processed
 
-    def __init__(self, root_folder, resize_val, norm_method, delete_duplicates=False, parent=None):
+    def __init__(
+        self,
+        root_folder,
+        output_folder,
+        resize_val,
+        delete_duplicates=False,
+        apply_hist_eq=False,
+        filter_mode="none",
+        interpolation_mode="BILINEAR",
+        parent=None
+    ):
         super().__init__(parent)
         self.root_folder = root_folder
+        self.output_folder = output_folder
         self.resize_val = resize_val
-        self.norm_method = norm_method
         self.delete_duplicates = delete_duplicates
+        self.apply_hist_eq = apply_hist_eq
+        self.filter_mode = filter_mode
+        self.interpolation_mode = interpolation_mode
 
     def run(self):
         try:
-            self.progress.emit(0, "Copying dataset & preparing to preprocess...")
-            dist_info, error_log, total_processed, dups_removed, elapsed_sec = preprocess_entire_dataset(
+            # Pass a callback that updates progress as we process each image
+            def progress_callback(current, total):
+                pct = int((current / total) * 100)
+                msg = f"Processing image {current} of {total}"
+                self.progress.emit(pct, msg)
+
+            self.progress.emit(0, "Starting Preprocessing...")
+            dist_info, error_log, total_processed, _, _ = preprocess_entire_dataset(
                 root_dir=self.root_folder,
-                dst_root="cleaned_data",
+                dst_root=self.output_folder,
                 resize_val=self.resize_val,
-                norm_method=self.norm_method,
-                delete_duplicates=self.delete_duplicates
+                delete_duplicates=self.delete_duplicates,
+                apply_hist_eq=self.apply_hist_eq,
+                filter_mode=self.filter_mode,
+                interpolation=self.interpolation_mode,
+                progress_fn=progress_callback
             )
             self.progress.emit(100, "All done!")
             self.finished.emit(dist_info, error_log, total_processed)
@@ -46,10 +67,13 @@ class PreprocessingWorker(QThread):
 class PreprocessingTab(QWidget):
     """
     Allows the user to:
-      1. Specify a raw dataset folder
-      2. Configure resizing & normalization (Basic)
-      3. Optionally remove duplicates (Advanced)
-      4. Produce a 'cleaned_data' folder
+      1. Pick a raw dataset folder
+      2. Pick an output folder
+      3. (Optional) Remove duplicates
+      4. (Optional) Apply histogram eq
+      5. (Optional) Filter mode (blur/sharpen)
+      6. Resize images with chosen interpolation
+      7. Produce a 'cleaned' version of the data
     """
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -58,50 +82,81 @@ class PreprocessingTab(QWidget):
         doc_label = QLabel(
             "<h3>Dataset Preprocessing</h3>"
             "Steps:<br>"
-            "1) Copy the raw dataset (Training & Testing) to <i>cleaned_data</i>.<br>"
+            "1) Copy the raw dataset (Training & Testing).<br>"
             "2) (Optional) Remove duplicates.<br>"
-            "3) Resize & normalize images.<br>"
+            "3) (Optional) Blur/Shapen filters.<br>"
+            "4) (Optional) Histogram Equalization (CLAHE).<br>"
+            "5) Resize images with chosen interpolation.<br>"
             "Your original data remains untouched."
         )
         doc_label.setWordWrap(True)
         main_layout.addWidget(doc_label)
 
-        # -----------------------
+        # Folder selection group
+        folder_box = QGroupBox("Data Folders")
+        folder_layout = QFormLayout()
+
+        # Source folder
+        self.root_edit = QLineEdit("data/archive")
+        self.root_edit.setToolTip("Folder containing 'Training' & 'Testing' subfolders.")
+        btn_src_browse = QPushButton("Browse...")
+        btn_src_browse.clicked.connect(self.on_browse_src)
+
+        h_src = QHBoxLayout()
+        h_src.addWidget(self.root_edit)
+        h_src.addWidget(btn_src_browse)
+        folder_layout.addRow("Source Folder:", h_src)
+
+        # Output folder
+        self.out_edit = QLineEdit("cleaned_data")
+        self.out_edit.setToolTip("Destination folder where cleaned data is placed.")
+        btn_out_browse = QPushButton("Browse...")
+        btn_out_browse.clicked.connect(self.on_browse_out)
+
+        h_out = QHBoxLayout()
+        h_out.addWidget(self.out_edit)
+        h_out.addWidget(btn_out_browse)
+        folder_layout.addRow("Output Folder:", h_out)
+
+        folder_box.setLayout(folder_layout)
+        main_layout.addWidget(folder_box)
+
         # BASIC SETTINGS group
-        # -----------------------
         basic_box = QGroupBox("Basic Settings")
         basic_form = QFormLayout()
 
-        self.root_edit = QLineEdit("data/archive")
-        self.root_edit.setToolTip("Folder containing 'Training' & 'Testing' subfolders.")
-
-        self.resize_combo = QLineEdit("128")  # let user type in or pick
-        self.norm_combo = QLineEdit("zscore")  # or "minmax"
-
-        basic_form.addRow("Source Folder:", self.root_edit)
+        self.resize_combo = QLineEdit("128")  # let user type or pick dimension
         basic_form.addRow("Resize (px):", self.resize_combo)
-        basic_form.addRow("Normalization:", self.norm_combo)
+
+        # Interpolation mode
+        self.interp_combo = QComboBox()
+        self.interp_combo.addItems(["BILINEAR", "BICUBIC", "LANCZOS"])
+        basic_form.addRow("Interpolation:", self.interp_combo)
+
         basic_box.setLayout(basic_form)
         main_layout.addWidget(basic_box)
 
-        # -----------------------
         # ADVANCED SETTINGS group
-        # -----------------------
         adv_box = QGroupBox("Advanced")
         adv_form = QFormLayout()
 
         self.dup_chk = QCheckBox("Delete duplicates?")
-        self.dup_chk.setToolTip("If checked, duplicates are removed in 'cleaned_data' before resizing.")
+        self.eq_chk = QCheckBox("Apply Histogram Equalization?")
+
+        # Filter combo
+        self.filter_combo = QComboBox()
+        self.filter_combo.addItems(["none", "blur", "sharpen"])
+        self.filter_combo.setToolTip("Apply blur or sharpen filter to each image")
 
         adv_form.addRow(self.dup_chk)
+        adv_form.addRow(self.eq_chk)
+        adv_form.addRow("Filter Mode:", self.filter_combo)
         adv_box.setLayout(adv_form)
         main_layout.addWidget(adv_box)
 
-        # -----------------------
-        # ACTION + PROGRESS
-        # -----------------------
+        # Action + Progress
         self.btn_preprocess = QPushButton("Start Preprocessing")
-        self.btn_preprocess.setToolTip("Copies & normalizes dataset into 'cleaned_data'.")
+        self.btn_preprocess.setToolTip("Copies dataset, optional eq, filtering, duplicates, etc.")
         self.btn_preprocess.clicked.connect(self.on_start_preprocessing)
 
         self.progress_bar = QProgressBar()
@@ -112,17 +167,36 @@ class PreprocessingTab(QWidget):
 
         # Log area
         self.log_box = QTextEdit()
-        self.log_box.setToolTip("Distribution info & any errors will appear here.")
+        self.log_box.setToolTip("Distribution info & any errors appear here.")
         self.log_box.setReadOnly(True)
         main_layout.addWidget(self.log_box)
 
         self.setLayout(main_layout)
         self.worker = None
 
+    def on_browse_src(self):
+        dlg = QFileDialog(self)
+        dlg.setFileMode(QFileDialog.Directory)
+        if dlg.exec_():
+            folder = dlg.selectedFiles()[0]
+            self.root_edit.setText(folder)
+
+    def on_browse_out(self):
+        dlg = QFileDialog(self)
+        dlg.setFileMode(QFileDialog.Directory)
+        if dlg.exec_():
+            folder = dlg.selectedFiles()[0]
+            self.out_edit.setText(folder)
+
     def on_start_preprocessing(self):
         root_folder = self.root_edit.text().strip()
         if not os.path.isdir(root_folder):
             QMessageBox.warning(self, "Invalid Folder", f"'{root_folder}' is not a valid directory.")
+            return
+
+        output_folder = self.out_edit.text().strip()
+        if not output_folder:
+            QMessageBox.warning(self, "No Output Folder", "Please specify an output folder.")
             return
 
         try:
@@ -131,19 +205,22 @@ class PreprocessingTab(QWidget):
             QMessageBox.warning(self, "Invalid Resize", "Resize must be an integer.")
             return
 
-        norm_method = self.norm_combo.text().strip().lower()
-        if norm_method not in ["zscore", "minmax", "none"]:
-            QMessageBox.warning(self, "Invalid Normalization", "Use 'zscore', 'minmax', or 'none'.")
-            return
-
         delete_dup = self.dup_chk.isChecked()
+        apply_eq = self.eq_chk.isChecked()
+        filter_mode = self.filter_combo.currentText()
+        interp_mode = self.interp_combo.currentText()
 
         self.log_box.clear()
+        self.progress_bar.setValue(0)
+
         self.worker = PreprocessingWorker(
             root_folder=root_folder,
+            output_folder=output_folder,
             resize_val=resize_val,
-            norm_method=(None if norm_method == "none" else norm_method),
-            delete_duplicates=delete_dup
+            delete_duplicates=delete_dup,
+            apply_hist_eq=apply_eq,
+            filter_mode=filter_mode,
+            interpolation_mode=interp_mode
         )
         self.worker.progress.connect(self.on_worker_progress)
         self.worker.finished.connect(self.on_worker_finished)
@@ -159,16 +236,13 @@ class PreprocessingTab(QWidget):
 
         self.log_box.append(f"<b>Total images processed:</b> {total_processed}")
         if dist_info:
-            self.log_box.append("<br><b>Distribution in 'cleaned_data':</b>")
-            for subset in ["Training", "Testing"]:
-                if subset in dist_info:
-                    subset_dict = dist_info[subset]
-                    if isinstance(subset_dict, dict):
-                        sub_total = 0
-                        for cls, cnt in subset_dict.items():
-                            self.log_box.append(f"{subset}/{cls}: {cnt}")
-                            sub_total += cnt
-                        self.log_box.append(f"Subtotal in {subset}: {sub_total}\n")
+            self.log_box.append("<br><b>Distribution in output folder:</b>")
+            for subset, sub_dict in dist_info.items():
+                sub_total = sum(sub_dict.values())
+                self.log_box.append(f"[{subset}] => {sub_total} images total")
+                for cls, cnt in sub_dict.items():
+                    self.log_box.append(f"   {cls}: {cnt}")
+                self.log_box.append("")
 
         if error_log:
             self.log_box.append("<b>Errors:</b>")

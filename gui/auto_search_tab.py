@@ -202,7 +202,6 @@ class AutoSearchTab(QWidget):
         # Try to parse user inputs
         try:
             resize_list = [int(x.strip()) for x in self.resize_edit.text().split(",")]
-            norm_list = [x.strip() for x in self.norm_edit.text().split(",")]
             disable_aug_list = [ast.literal_eval(x.strip()) for x in self.disable_aug_edit.text().split(",")]
             adv_aug_list = [ast.literal_eval(x.strip()) for x in self.adv_aug_edit.text().split(",")]
             dropout_list = [float(x.strip()) for x in self.dropout_edit.text().split(",")]
@@ -230,7 +229,6 @@ class AutoSearchTab(QWidget):
         self.log_area.append("<b>Running Auto Search with:</b>\n")
         self.log_area.append(f"Data Root: {root_dir}")
         self.log_area.append(f"resize_list = {resize_list}")
-        self.log_area.append(f"norm_list = {norm_list}")
         self.log_area.append(f"disable_aug_list = {disable_aug_list}")
         self.log_area.append(f"adv_aug_list = {adv_aug_list}")
         self.log_area.append(f"dropout_list = {dropout_list}")
@@ -246,7 +244,6 @@ class AutoSearchTab(QWidget):
         self.worker.setup_search(
             data_root=root_dir,
             resize_list=resize_list,
-            norm_list=norm_list,
             disable_augment_list=disable_aug_list,
             adv_aug_list=adv_aug_list,
             dropout_list=dropout_list,

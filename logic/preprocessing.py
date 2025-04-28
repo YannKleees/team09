@@ -1,30 +1,60 @@
-# File: logic/preprocessing.py
-
 import os
 import time
 import shutil
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
+import cv2  # for CLAHE-based histogram eq
 
 from logic.duplicates import remove_duplicates_across_dataset
-# (REMOVED the "from logic.preprocessing import preprocess_entire_dataset" line to avoid circular import)
 
+def _adaptive_histogram_equalize(pil_img):
+    """
+    Applies OpenCV's CLAHE to a PIL grayscale image.
+    """
+    arr = np.array(pil_img, dtype=np.uint8)  # shape: (H, W)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    eq_arr = clahe.apply(arr)  # result is uint8
+    out_pil = Image.fromarray(eq_arr)
+    return out_pil
+
+def _get_pil_interpolation(mode_str):
+    """
+    Convert a string like "BILINEAR"|"BICUBIC"|"LANCZOS"
+    into the corresponding PIL interpolation constant.
+    Defaults to Image.BILINEAR if unknown.
+    """
+    mode_str = mode_str.upper()
+    if mode_str == "BICUBIC":
+        return Image.BICUBIC
+    elif mode_str == "LANCZOS":
+        return Image.LANCZOS
+    else:
+        return Image.BILINEAR  # default
 
 def preprocess_entire_dataset(
-    root_dir="data/archive",
-    dst_root="cleaned_data",
+    root_dir,
+    dst_root,
     resize_val=128,
-    norm_method=None,
-    delete_duplicates=False
+    delete_duplicates=False,
+    apply_hist_eq=False,
+    filter_mode="none",
+    interpolation="BILINEAR",
+    progress_fn=None
 ):
     """
-    Copy images from 'root_dir' (with subfolders e.g. Training/Testing) into 'dst_root',
-    optionally remove duplicates, resize, and normalize.
+    Copy images from 'root_dir' (with subfolders e.g. Training/Testing) into 'dst_root'.
+    Then optionally:
+      - remove duplicates (MD5 hash check)
+      - apply CLAHE-based histogram eq
+      - apply blur/sharpen filters
+      - resize with chosen interpolation
+
+    progress_fn: an optional callback(current_idx, total_count).
 
     Returns:
         dist_info (dict): distribution info { subset: {class: count} }
         error_log (list): any errors
-        total_processed (int): how many images we processed
+        total_processed (int): how many images were processed
         dups_removed (int): how many duplicates removed
         elapsed_sec (float): time taken in seconds
     """
@@ -35,19 +65,19 @@ def preprocess_entire_dataset(
     dups_removed = 0
 
     if not os.path.isdir(root_dir):
-        raise ValueError(f"{root_dir} does not exist.")
+        raise ValueError(f"Source '{root_dir}' does not exist.")
 
-    # 1) Copy structure
-    # We'll look for 'Training' and 'Testing' subfolders. If your dataset has different naming,
-    # adjust accordingly.
     subsets = ["Training", "Testing"]
+    if os.path.exists(dst_root):
+        # we could optionally remove existing. or do partial. let's do:
+        shutil.rmtree(dst_root, ignore_errors=True)
     os.makedirs(dst_root, exist_ok=True)
 
+    # Step 1: Copy structure
     for subset in subsets:
         src_subset = os.path.join(root_dir, subset)
         dst_subset = os.path.join(dst_root, subset)
         if os.path.isdir(src_subset):
-            shutil.rmtree(dst_subset, ignore_errors=True)  # clear any old data
             os.makedirs(dst_subset, exist_ok=True)
 
             classes = [
@@ -57,7 +87,7 @@ def preprocess_entire_dataset(
             for cls_ in classes:
                 os.makedirs(os.path.join(dst_subset, cls_), exist_ok=True)
 
-            # Copy images
+            images_copied = 0
             for cls_ in classes:
                 src_class_dir = os.path.join(src_subset, cls_)
                 dst_class_dir = os.path.join(dst_subset, cls_)
@@ -70,156 +100,73 @@ def preprocess_entire_dataset(
                     dst_path = os.path.join(dst_class_dir, img_name)
                     try:
                         shutil.copy2(src_path, dst_path)
+                        images_copied += 1
                     except Exception as e:
                         error_log.append(f"CopyError: {src_path} => {e}")
 
-    # 2) Optionally remove duplicates
+    # Step 2: Remove duplicates if requested
     if delete_duplicates:
-        dups_removed = remove_duplicates_across_dataset(dst_root)
-
-    # 3) Resize & normalize
-    total_processed, err_list = _resize_and_normalize_images(dst_root, resize_val, norm_method)
-    error_log.extend(err_list)
-
-    # 4) Summarize distribution
-    for subset in subsets:
-        subset_path = os.path.join(dst_root, subset)
-        if os.path.isdir(subset_path):
-            cls_dict = {}
-            for cls_ in os.listdir(subset_path):
-                cpath = os.path.join(subset_path, cls_)
-                if os.path.isdir(cpath):
-                    n = sum(
-                        f.lower().endswith(('.png', '.jpg', '.jpeg'))
-                        for f in os.listdir(cpath)
-                    )
-                    cls_dict[cls_] = n
-            dist_info[subset] = cls_dict
-
-    elapsed_sec = time.time() - t0
-    return dist_info, error_log, total_processed, len(dups_removed), elapsed_sec
-
-
-def _resize_and_normalize_images(folder, resize_val, norm_method):
-    """
-    Internal helper to loop over all images and apply resizing + optional normalization.
-    """
-    errors = []
-    processed_count = 0
-
-    for root, dirs, files in os.walk(folder):
-        for fname in files:
-            if fname.lower().endswith(('.png', '.jpg', '.jpeg')):
-                fpath = os.path.join(root, fname)
-                try:
-                    with Image.open(fpath).convert('L') as im:
-                        # 1) Resize
-                        im = im.resize((resize_val, resize_val), Image.BILINEAR)
-
-                        # 2) Normalize if requested
-                        if norm_method == "zscore":
-                            arr = np.array(im, dtype=np.float32)
-                            mean_val = arr.mean()
-                            std_val = arr.std()
-                            if std_val > 1e-5:
-                                arr = (arr - mean_val) / std_val
-                            # Convert back to [0..255] for saving
-                            arr = (arr - arr.min()) / (arr.max() - arr.min() + 1e-8) * 255.0
-                            im = Image.fromarray(arr.astype(np.uint8))
-                        elif norm_method == "minmax":
-                            arr = np.array(im, dtype=np.float32)
-                            arr = (arr - arr.min()) / (arr.max() - arr.min() + 1e-8) * 255.0
-                            im = Image.fromarray(arr.astype(np.uint8))
-                        # else norm_method=None => do nothing
-
-                        # Finally save back
-                        im.save(fpath)
-                        processed_count += 1
-
-                except Exception as e:
-                    errors.append(f"ProcessingError: {fpath} => {e}")
-
-    return processed_count, errors
-
-
-# Below is an example “extended” function that also does histogram eq:
-def preprocess_entire_dataset_with_eq(
-    root_dir="data/archive",
-    dst_root="cleaned_data",
-    resize_val=128,
-    norm_method=None,
-    delete_duplicates=False,
-    patient_split=False,
-    apply_hist_eq=False
-):
-    """
-    A variant that optionally does histogram eq before resizing,
-    and can do "patient-level" splitting if needed.
-
-    This is used by `PreprocessingWorker` in the new tab if you want it.
-    """
-    # For simplicity, we’ll just do the same structure, then
-    # apply eq if `apply_hist_eq` is True inside _resize_and_normalize_images_with_eq().
-    t0 = time.time()
-    error_log = []
-    dist_info = {}
-    total_processed = 0
-
-    if not os.path.isdir(root_dir):
-        raise ValueError(f"{root_dir} does not exist.")
-
-    # If you’re using “Validation” / “Test” subfolders, adapt here:
-    subsets = ["Validation", "Test"]
-    os.makedirs(dst_root, exist_ok=True)
-
-    for subset in subsets:
-        src_subset = os.path.join(root_dir, subset)
-        dst_subset = os.path.join(dst_root, subset)
-        if os.path.isdir(src_subset):
-            shutil.rmtree(dst_subset, ignore_errors=True)
-            os.makedirs(dst_subset, exist_ok=True)
-
-            classes = [
-                d for d in os.listdir(src_subset)
-                if os.path.isdir(os.path.join(src_subset, d))
-            ]
-            for cls_ in classes:
-                os.makedirs(os.path.join(dst_subset, cls_), exist_ok=True)
-
-            # Copy images
-            for cls_ in classes:
-                src_class_dir = os.path.join(src_subset, cls_)
-                dst_class_dir = os.path.join(dst_subset, cls_)
-                images = [
-                    f for f in os.listdir(src_class_dir)
-                    if f.lower().endswith(('.png', '.jpg', '.jpeg'))
-                ]
-                for img_name in images:
-                    src_path = os.path.join(src_class_dir, img_name)
-                    dst_path = os.path.join(dst_class_dir, img_name)
-                    try:
-                        shutil.copy2(src_path, dst_path)
-                    except Exception as e:
-                        error_log.append(f"CopyError: {src_path} => {e}")
-
-    # optionally remove duplicates
-    if delete_duplicates:
-        from logic.duplicates import remove_duplicates_across_dataset
         duplicates = remove_duplicates_across_dataset(dst_root)
-        # If you want them actually removed, you'd do:
+        dups_removed = len(duplicates)
         for dup_file in duplicates:
             try:
                 os.remove(dup_file)
             except OSError:
                 pass
 
-    # Do the resizing & eq
-    total_processed, err_list = _resize_and_normalize_images_with_eq(
-        dst_root, resize_val, norm_method, apply_hist_eq
-    )
-    error_log.extend(err_list)
+    # Step 3: Process (hist eq, filter, resize) for all images
+    all_image_paths = []
+    for subset in subsets:
+        subset_path = os.path.join(dst_root, subset)
+        if os.path.isdir(subset_path):
+            classes = [
+                d for d in os.listdir(subset_path)
+                if os.path.isdir(os.path.join(subset_path, d))
+            ]
+            for cls_ in classes:
+                cpath = os.path.join(subset_path, cls_)
+                files = [
+                    f for f in os.listdir(cpath)
+                    if f.lower().endswith(('.png', '.jpg', '.jpeg'))
+                ]
+                for fname in files:
+                    fullpath = os.path.join(cpath, fname)
+                    all_image_paths.append(fullpath)
 
-    # Summarize distribution
+    interp_mode = _get_pil_interpolation(interpolation)
+    n_images = len(all_image_paths)
+
+    # define a small helper for applying blur/sharpen
+    def apply_filter(pil_im, mode):
+        if mode == "blur":
+            return pil_im.filter(ImageFilter.BLUR)
+        elif mode == "sharpen":
+            return pil_im.filter(ImageFilter.SHARPEN)
+        return pil_im
+
+    idx = 0
+    for ipath in all_image_paths:
+        idx += 1
+        if progress_fn:
+            progress_fn(idx, n_images)
+
+        try:
+            with Image.open(ipath).convert('L') as im:
+                # 3a) optional hist eq
+                if apply_hist_eq:
+                    im = _adaptive_histogram_equalize(im)
+                # 3b) optional blur/sharpen
+                im = apply_filter(im, filter_mode.lower())
+                # 3c) resize
+                im = im.resize((resize_val, resize_val), interp_mode)
+                # 3d) save
+                im.save(ipath)
+                total_processed += 1
+
+        except Exception as e:
+            error_log.append(f"ProcessingError: {ipath} => {e}")
+
+    # Step 4: Summarize distribution in dst_root
     for subset in subsets:
         subset_path = os.path.join(dst_root, subset)
         if os.path.isdir(subset_path):
@@ -234,53 +181,5 @@ def preprocess_entire_dataset_with_eq(
                     cls_dict[cls_] = n
             dist_info[subset] = cls_dict
 
-    # If patient_split is True, you’d incorporate your custom logic here...
-
     elapsed_sec = time.time() - t0
-    return dist_info, error_log, total_processed
-
-
-def _resize_and_normalize_images_with_eq(folder, resize_val, norm_method, apply_hist_eq):
-    """
-    Similar to _resize_and_normalize_images, but applies histogram eq if requested.
-    """
-    import numpy as np
-    from PIL import Image, ImageOps
-
-    errors = []
-    processed_count = 0
-
-    for root, dirs, files in os.walk(folder):
-        for fname in files:
-            if fname.lower().endswith(('.png', '.jpg', '.jpeg')):
-                fpath = os.path.join(root, fname)
-                try:
-                    with Image.open(fpath).convert('L') as im:
-                        if apply_hist_eq:
-                            im = ImageOps.equalize(im)
-
-                        # 1) Resize
-                        im = im.resize((resize_val, resize_val), Image.BILINEAR)
-
-                        # 2) Normalize if requested
-                        if norm_method == "zscore":
-                            arr = np.array(im, dtype=np.float32)
-                            mean_val = arr.mean()
-                            std_val = arr.std()
-                            if std_val > 1e-5:
-                                arr = (arr - mean_val) / std_val
-                            arr = (arr - arr.min()) / (arr.max() - arr.min() + 1e-8) * 255.0
-                            im = Image.fromarray(arr.astype(np.uint8))
-                        elif norm_method == "minmax":
-                            arr = np.array(im, dtype=np.float32)
-                            arr = (arr - arr.min()) / (arr.max() - arr.min() + 1e-8) * 255.0
-                            im = Image.fromarray(arr.astype(np.uint8))
-                        # else None => do nothing
-
-                        im.save(fpath)
-                        processed_count += 1
-
-                except Exception as e:
-                    errors.append(f"ProcessingError: {fpath} => {e}")
-
-    return processed_count, errors
+    return dist_info, error_log, total_processed, dups_removed, elapsed_sec

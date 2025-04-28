@@ -31,7 +31,6 @@ class StepAWorker(QThread):
         searcherA = HyperparamSearcher(
             data_root=self.data_root,
             resize_list=[128, 160, 224],
-            norm_list=["zscore", "minmax"],
             disable_augment_list=[False, True],
             adv_aug_list=[False, True],
             # fixed model side
@@ -95,7 +94,6 @@ class StepBWorker(QThread):
         searcherB = HyperparamSearcher(
             data_root=self.data_root,
             resize_list=[chosen_resize],
-            norm_list=[chosen_norm],
             disable_augment_list=[chosen_disable_aug],
             adv_aug_list=[chosen_adv_aug],
             dropout_list=[0.0, 0.3, 0.5],
@@ -194,7 +192,6 @@ class StepCWorker(QThread):
         searcherC = HyperparamSearcher(
             data_root=self.data_root,
             resize_list=[resize_val],
-            norm_list=[norm_str],
             disable_augment_list=[dis_aug],
             adv_aug_list=[adv_aug],
             dropout_list=dropout_list,
@@ -249,7 +246,6 @@ class AutoSearchWorker(QThread):
         self,
         data_root,
         resize_list,
-        norm_list,
         disable_augment_list,
         adv_aug_list,
         dropout_list,
@@ -265,7 +261,6 @@ class AutoSearchWorker(QThread):
         self.searcher = HyperparamSearcher(
             data_root=data_root,
             resize_list=resize_list,
-            norm_list=norm_list,
             disable_augment_list=disable_augment_list,
             adv_aug_list=adv_aug_list,
             dropout_list=dropout_list,
@@ -322,7 +317,6 @@ class StepwiseSearchManager:
         searcherA = HyperparamSearcher(
             data_root=self.data_root,
             resize_list=[128, 160, 224],
-            norm_list=["zscore", "minmax"],
             disable_augment_list=[False, True],
             adv_aug_list=[False, True],
             # fix model side
@@ -350,7 +344,6 @@ class StepwiseSearchManager:
         searcherB = HyperparamSearcher(
             data_root=self.data_root,
             resize_list=[chosen_resize],
-            norm_list=[chosen_norm],
             disable_augment_list=[chosen_disable_aug],
             adv_aug_list=[chosen_adv_aug],
             dropout_list=[0.0, 0.3, 0.5],
@@ -400,7 +393,6 @@ class HyperparamSearcher:
         self,
         data_root,
         resize_list=[128, 160],
-        norm_list=["minmax", "zscore", "none"],
         disable_augment_list=[False, True],
         adv_aug_list=[False, True],
         dropout_list=[0.0, 0.3],
@@ -419,7 +411,6 @@ class HyperparamSearcher:
     ):
         self.data_root = data_root
         self.resize_list = resize_list
-        self.norm_list = norm_list
         self.disable_augment_list = disable_augment_list
         self.adv_aug_list = adv_aug_list
         self.dropout_list = dropout_list
@@ -446,7 +437,6 @@ class HyperparamSearcher:
     def run_search_with_logging(self, log_func=print):
         combos = itertools.product(
             self.resize_list,
-            self.norm_list,
             self.disable_augment_list,
             self.adv_aug_list,
             self.dropout_list,

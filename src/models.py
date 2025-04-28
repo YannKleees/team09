@@ -1,10 +1,13 @@
 """
 models.py
 
-Defines all model architectures used in this project,
-including a simple single-branch CNN (SimpleCNN) and
-a double-headed CNN (DoubleHeadCNN). Easily extensible
-to new architectures in the future.
+Defines several model architectures for the Brain Tumor MRI project:
+  - SimpleCNN for binary or multi-class classification
+  - DoubleHeadCNN for a two-headed approach (binary + multi)
+  - Transfer Learning placeholder
+  - Custom advanced model placeholder
+
+Easily extensible to new architectures in the future.
 """
 
 import torch.nn as nn
@@ -17,7 +20,8 @@ class SimpleCNN(nn.Module):
     """
     A baseline CNN with optional dropout.
     - num_classes: number of output classes
-       e.g. 2 for (tumor vs. no tumor), or 4 for multiple tumor types
+       e.g. 2 for (tumor vs. no tumor) OR 4 for multiple tumor types (0=No,1=Meningioma,2=Glioma,3=Pituitary)
+         * If you only have 3 tumor subtypes (and no 'no tumor'), set num_classes=3.
     - input_size: input image dimension (assumes square)
     - dropout: dropout probability
 
@@ -37,8 +41,8 @@ class SimpleCNN(nn.Module):
             nn.MaxPool2d(2),
             nn.Dropout2d(dropout),
         )
-        # if input_size=128, after two MaxPool(2) we get (128/4 = 32),
-        # so flattened_dim = channels * 32 * 32
+        # If input_size=128, after two MaxPool(2) we get 128 -> 64 -> 32,
+        # so flattened_dim = 16 * (input_size//4) * (input_size//4)
         flattened_dim = 16 * (input_size // 4) * (input_size // 4)
 
         self.classifier = nn.Sequential(
@@ -62,14 +66,14 @@ class DoubleHeadCNN(nn.Module):
     """
     A CNN that uses a single shared feature extractor but has two output "heads":
       1) A binary head for (no_tumor vs. tumor)
-      2) A multi-class head (e.g. 3 tumor subtypes)
+      2) A multi-class head (e.g. 3 tumor subtypes or 4 if you included "no tumor" there)
 
     The forward pass picks which head to use by specifying mode='binary' or 'multi'.
 
     Example usage:
         model = DoubleHeadCNN(input_size=224, dropout=0.1)
         # model(x, mode='binary') => shape [N,2]
-        # model(x, mode='multi')  => shape [N,3]
+        # model(x, mode='multi')  => shape [N,3] or [N,4] if you changed that layer
     """
     def __init__(self, input_size=128, dropout=0.0):
         super().__init__()
@@ -93,16 +97,16 @@ class DoubleHeadCNN(nn.Module):
             nn.Linear(flattened_dim, 32),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(32, 2)  # 2 classes
+            nn.Linear(32, 2)  # 2 classes: no tumor vs tumor
         )
 
-        # Head 2: Multi-class classification
+        # Head 2: Multi-class classification (default 3, but you can adjust to 4)
         self.head_multi = nn.Sequential(
             nn.Flatten(),
             nn.Linear(flattened_dim, 32),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(32, 3)  # 3 classes for tumor subtypes
+            nn.Linear(32, 3)  # By default, 3 classes for tumor subtypes
         )
 
     def forward(self, x, mode='binary'):
@@ -112,6 +116,42 @@ class DoubleHeadCNN(nn.Module):
             return self.head_binary(feats)
         else:
             return self.head_multi(feats)
+
+
+################################################################################
+# Placeholder: Transfer Learning approach
+################################################################################
+# TODO: Implement a transfer learning model, e.g., using torchvision.models.resnet18
+#       or any other pre-trained architecture. The skeleton might look like:
+#
+# import torchvision.models as models
+#
+# class TransferModel(nn.Module):
+#     def __init__(self, num_classes=2, dropout=0.0):
+#         super().__init__()
+#         # TODO: load a pretrained model, replace the classifier head
+#         # e.g. self.backbone = models.resnet18(pretrained=True)
+#         # freeze or unfreeze layers, etc.
+#         # self.fc = nn.Linear(512, num_classes)  # for example
+#         # ...
+#     def forward(self, x):
+#         # TODO: define forward pass
+#         pass
+
+
+################################################################################
+# Placeholder: Custom advanced architecture
+################################################################################
+# TODO: Implement a more complex architecture (multi-scale, attention, etc.).
+# For example:
+#
+# class CustomAdvancedCNN(nn.Module):
+#     def __init__(self, ...):
+#         super().__init__()
+#         # define your layers
+#     def forward(self, x):
+#         # define forward pass
+#         pass
 
 
 ################################################################################
@@ -125,9 +165,10 @@ def get_model(model_variant, input_size=128, dropout=0.0):
 
     model_variant can be one of:
        - 'binary' => SimpleCNN(num_classes=2)
-       - 'multi'  => SimpleCNN(num_classes=4)
-       - 'double' => DoubleHeadCNN()
-       - (You can add more custom variants as needed.)
+       - 'multi'  => SimpleCNN(num_classes=4) (by default)
+       - 'double' => DoubleHeadCNN() (2-head approach)
+       - 'transfer' => TODO: implement
+       - 'custom'   => TODO: implement
 
     Example usage:
         model, nc = get_model("binary", input_size=128, dropout=0.2)
@@ -137,14 +178,23 @@ def get_model(model_variant, input_size=128, dropout=0.0):
         return SimpleCNN(num_classes=2, input_size=input_size, dropout=dropout), 2
 
     elif model_variant == "multi":
-        # 4-class classification (no tumor + 3 tumor subtypes)
+        # 4-class classification by default (0=No tumor + 3 subtypes)
+        # If you have only 3 subtypes, modify in SimpleCNN or pass num_classes=3.
         return SimpleCNN(num_classes=4, input_size=input_size, dropout=dropout), 4
 
     elif model_variant == "double":
         # Double-headed CNN
         # For 'double', the number of classes is not a single integer,
-        # since we effectively have 2 heads with 2-class and 3-class outputs.
+        # since we effectively have 2 heads: [2-class] + [3 or 4 class].
         return DoubleHeadCNN(input_size=input_size, dropout=dropout), None
+
+    elif model_variant == "transfer":
+        # TODO: Implement a real TransferModel once you define it
+        raise NotImplementedError("Transfer learning model not yet implemented. See TODO in models.py")
+
+    elif model_variant == "custom":
+        # TODO: Implement a real CustomAdvancedCNN once you define it
+        raise NotImplementedError("Custom advanced model not yet implemented. See TODO in models.py")
 
     else:
         raise ValueError(f"Unknown model_variant: {model_variant}")
