@@ -1,24 +1,20 @@
+# File: gui/main_window.py
+
 import sys
 from PyQt5.QtWidgets import (
-    QMainWindow, QTabWidget, QStyleFactory, QApplication,
-    QPushButton, QLabel, QLineEdit, QHBoxLayout, QFileDialog,
-    QTextEdit, QMessageBox, QVBoxLayout, QGroupBox, QFormLayout,
+    QMainWindow, QTabWidget, QStyleFactory, QApplication
 )
 from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import Qt
-import torch
 
 # Import existing tabs
 from gui.dashboard_tab import DashboardTab
 from gui.preprocessing_tab import PreprocessingTab
 from gui.augmentation_tab import AugmentationTab
 from gui.compare_tab import CompareTab
-from gui.training_tab import TrainingTab
 from gui.auto_search_tab import AutoSearchTab
-from gui.advanced_eda_tab import AdvancedEdaTab
-from gui.inference_tab import InferenceTab 
-
-
+from gui.info_tab import InfoTab
+from gui.inference_tab import InferenceTab
 
 class MainWindow(QMainWindow):
     """
@@ -27,11 +23,10 @@ class MainWindow(QMainWindow):
       - Preprocessing
       - Augmentation
       - Comparison
-      - Training
       - Auto Search
       - Advanced EDA
-      - Inference (merged here)
-    No mode selection, no placeholders.
+      - Inference
+    (NOTE: Training tab removed)
     """
 
     def __init__(self):
@@ -43,16 +38,14 @@ class MainWindow(QMainWindow):
         self.tab_widget = QTabWidget()
         self.tab_widget.setTabPosition(QTabWidget.North)
 
-        # Add all tabs unconditionally
+        # Add the relevant tabs
         self.tab_widget.addTab(DashboardTab(), "Dashboard")
+        self.tab_widget.addTab(InfoTab(), "Info")
         self.tab_widget.addTab(PreprocessingTab(), "Preprocessing")
         self.tab_widget.addTab(AugmentationTab(), "Augmentation")
         self.tab_widget.addTab(CompareTab(), "Comparison")
-        self.tab_widget.addTab(TrainingTab(), "Training")
-        self.tab_widget.addTab(AutoSearchTab(), "Hyperparameter Search")
-        self.tab_widget.addTab(AdvancedEdaTab(), "Advanced EDA")
+        self.tab_widget.addTab(AutoSearchTab(), " Auto Search")
         self.tab_widget.addTab(InferenceTab(), "Inference")
-
         self.setCentralWidget(self.tab_widget)
         self._setup_modern_style()
 
@@ -88,13 +81,11 @@ class MainWindow(QMainWindow):
         """
         self.setStyleSheet(qss)
 
-
 def main():
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
     sys.exit(app.exec_())
-
 
 if __name__ == "__main__":
     main()

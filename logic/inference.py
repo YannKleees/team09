@@ -1,17 +1,19 @@
 # File: logic/inference.py
 
 import os
+import csv
 import torch
-from PIL import Image
 import torch.nn.functional as F
+from PIL import Image
 
 from src.models import get_model
 from src.transforms_config import create_transform
 
+
 class InferenceModel:
     """
-    Simple helper class for loading a trained model checkpoint
-    and performing a single-image prediction.
+    Enhanced helper class for loading a trained model checkpoint
+    and performing single-image or batch (folder) prediction.
     """
 
     def __init__(
@@ -25,7 +27,7 @@ class InferenceModel:
     ):
         self.device = torch.device(device)
 
-        # Build the chosen model; note that for 'double' we don't pass num_classes
+        # Build the chosen model
         self.model, _ = get_model(
             model_variant=model_variant,
             input_size=input_size,
@@ -37,22 +39,23 @@ class InferenceModel:
         if not os.path.isfile(checkpoint_path):
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
+        # Load checkpoint
         state = torch.load(checkpoint_path, map_location=self.device)
         self.model.load_state_dict(state)
         self.model_variant = model_variant
 
         # Build transform (same logic as training)
-        norm_str = (None if normalization == "none" else normalization)
         self.transform = create_transform(
             image_size=(input_size, input_size),
-            normalization=norm_str,
             augment=False
         )
 
     def predict(self, pil_img):
         """
+        Single-image prediction.
+
         Returns a dict with predictions and probabilities:
-         - For 'double': 
+         - For 'double':
               {
                 "prediction": "no_tumor" OR "tumor_subtype_X",
                 "binary_probs": [...],
@@ -74,8 +77,8 @@ class InferenceModel:
             if self.model_variant == "double":
                 out_bin = self.model(x, mode='binary')
                 bin_probs = F.softmax(out_bin, dim=1)[0]  # shape [2]
+                # if the bin_probs[1] > bin_probs[0], we have a tumor => check multi
                 if bin_probs[1] > bin_probs[0]:
-                    # It's a tumor => run multi
                     out_multi = self.model(x, mode='multi')
                     multi_probs = F.softmax(out_multi, dim=1)[0]  # shape [3]
                     subtype_idx = multi_probs.argmax().item()
@@ -89,7 +92,6 @@ class InferenceModel:
                         "prediction": "no_tumor",
                         "binary_probs": bin_probs.tolist()
                     }
-
             else:
                 # single-head (binary or multi)
                 out = self.model(x)
@@ -99,3 +101,125 @@ class InferenceModel:
                     "class_index": int(pred_idx),
                     "probabilities": probs.tolist()
                 }
+
+    def predict_batch(
+        self,
+        image_paths=None,
+        folder_path=None,
+        export_csv=None
+    ):
+        """
+        Batch inference on multiple images.
+
+        :param image_paths: list of file paths to run inference on.
+        :param folder_path: optional folder containing images. If provided, 
+                           we'll scan for .png/.jpg/.jpeg in that folder (non-recursive).
+        :param export_csv: if set to a filename (e.g. "results.csv"), we export predictions.
+
+        :return: A list of dict results. Each dict includes:
+                 {
+                    "file": "/path/to/image.png",
+                    "prediction": "...",
+                    "binary_probs": [...] or None,
+                    "multi_probs": [...] or None,
+                    "class_index": ...,
+                    "probabilities": [...]
+                 }
+                 (fields vary depending on model type)
+        """
+        # Gather the file list from either image_paths or folder_path:
+        file_list = []
+        if image_paths:
+            file_list = list(image_paths)
+        elif folder_path:
+            if not os.path.isdir(folder_path):
+                raise ValueError(f"Folder not found: {folder_path}")
+            all_files = os.listdir(folder_path)
+            # pick images only
+            for f in all_files:
+                ext = f.lower()
+                if ext.endswith(".png") or ext.endswith(".jpg") or ext.endswith(".jpeg"):
+                    file_list.append(os.path.join(folder_path, f))
+        else:
+            raise ValueError("Must provide image_paths or folder_path for batch inference.")
+
+        results = []
+
+        for img_path in file_list:
+            if not os.path.isfile(img_path):
+                # skip invalid
+                continue
+
+            try:
+                pil_img = Image.open(img_path).convert('L')
+            except Exception as e:
+                # optional: store error
+                res = {"file": img_path, "error": f"Could not open: {e}"}
+                results.append(res)
+                continue
+
+            # Single predict
+            pred_dict = self._predict_internal(pil_img)
+            pred_dict["file"] = img_path
+            results.append(pred_dict)
+
+        # optionally export CSV
+        if export_csv:
+            self._export_results_csv(results, export_csv)
+
+        return results
+
+    def _predict_internal(self, pil_img):
+        """
+        Internal helper that just returns the full record:
+        For 'double': {prediction, binary_probs, multi_probs}
+        For 'binary': {class_index, probabilities}
+        For 'multi':  {class_index, probabilities}
+        """
+        x = self.transform(pil_img).unsqueeze(0).to(self.device)
+        with torch.no_grad():
+            if self.model_variant == "double":
+                out_bin = self.model(x, mode='binary')
+                bin_probs = F.softmax(out_bin, dim=1)[0]
+                if bin_probs[1] > bin_probs[0]:
+                    out_multi = self.model(x, mode='multi')
+                    multi_probs = F.softmax(out_multi, dim=1)[0]
+                    subtype_idx = multi_probs.argmax().item()
+                    return {
+                        "prediction": f"tumor_subtype_{subtype_idx}",
+                        "binary_probs": bin_probs.tolist(),
+                        "multi_probs": multi_probs.tolist()
+                    }
+                else:
+                    return {
+                        "prediction": "no_tumor",
+                        "binary_probs": bin_probs.tolist(),
+                        "multi_probs": None
+                    }
+            else:
+                out = self.model(x)
+                probs = F.softmax(out, dim=1)[0]
+                pred_idx = probs.argmax().item()
+                return {
+                    "class_index": int(pred_idx),
+                    "probabilities": probs.tolist()
+                }
+
+    def _export_results_csv(self, results, csv_path):
+        """
+        Exports batch inference results to a CSV file.
+        We'll unify fields across 'double'/'binary'/'multi' for convenience.
+        """
+        # We'll guess some columns that might appear:
+        fieldnames = ["file","prediction","binary_probs","multi_probs","class_index","probabilities","error"]
+        # Filter out columns that never appear
+        # For simplicity, let's keep them but set them to "" if missing.
+
+        try:
+            with open(csv_path, mode='w', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                for row in results:
+                    writer.writerow(row)
+        except Exception as e:
+            print(f"[WARN] Could not export CSV to {csv_path}: {e}")

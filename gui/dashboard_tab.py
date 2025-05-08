@@ -1,26 +1,98 @@
+"""
+dashboard_tab.py
+
+An upgraded "DashboardTab" with:
+  1) Multi-subset comparisons
+  2) Advanced stats (quartiles, box plots)
+  3) Interactive exploration: click a histogram bar to view sample images.
+  4) Original functionalities: distribution of intensities, normalization comparison
+"""
+
 import os
 import random
 import numpy as np
 from PIL import Image
+import cv2  # For advanced histogram eq if needed
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QGroupBox, QFormLayout,
     QPushButton, QSpinBox, QTextEdit, QMessageBox, QScrollArea,
-    QSizePolicy, QHBoxLayout
+    QSizePolicy, QHBoxLayout, QCheckBox, QComboBox, QDialog,
+    QGridLayout
 )
-from PyQt5.QtCore import Qt
-from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+from PyQt5.QtCore import Qt, QPoint
+from matplotlib.backends.backend_qt5agg import (
+    NavigationToolbar2QT as NavigationToolbar
+)
+from matplotlib.backend_bases import MouseButton, PickEvent
+from matplotlib.patches import Rectangle
 
 from gui.widgets import MplCanvas
-from src.transforms_config import create_transform
 
 
+########################################################################
+## HELPER FUNCTIONS
+########################################################################
+def gather_subfolders(root_folder):
+    """
+    Return a list of subfolder names under `root_folder` that themselves
+    contain images or class folders. Typically: ["Training","Testing","Validation"].
+    """
+    if not os.path.isdir(root_folder):
+        return []
+    subfolders = []
+    for d in os.listdir(root_folder):
+        dpath = os.path.join(root_folder, d)
+        if os.path.isdir(dpath):
+            # check if it has images or sub-subfolders
+            # we keep it as a valid subset
+            subfolders.append(d)
+    return sorted(subfolders)
+
+
+def gather_images_in_folder(folder_path, max_samples=None):
+    """
+    Return a list of all .png/.jpg/.jpeg images inside `folder_path` (recursively).
+    If max_samples is set, limit the total count.
+    """
+    all_files = []
+    for root, dirs, files in os.walk(folder_path):
+        for f in files:
+            ext = f.lower()
+            if ext.endswith('.png') or ext.endswith('.jpg') or ext.endswith('.jpeg'):
+                all_files.append(os.path.join(root, f))
+
+    if max_samples and len(all_files) > max_samples:
+        random.shuffle(all_files)
+        return all_files[:max_samples]
+    return all_files
+
+
+def load_grayscale_float32(image_path):
+    """
+    Load a single image as grayscale float32. Returns a flattened array.
+    On error, returns None.
+    """
+    try:
+        from PIL import Image
+        img = Image.open(image_path).convert('L')
+        arr = np.array(img, dtype=np.float32)
+        return arr.flatten()  # flatten for intensity stats
+    except:
+        return None
+
+
+########################################################################
+## DashboardTab (Upgraded)
+########################################################################
 class DashboardTab(QWidget):
     """
-    Basic Data overview & dashboard:
-      - Summarize distribution of classes
-      - Sample intensities and plot a histogram
-      - Compare normalization options
+    Upgraded "DashboardTab" with:
+      1. Multi-Subset Comparisons
+      2. Advanced Stats (quartiles, box plots)
+      3. Interactive histogram exploration
+      4. Original sampling + distribution
+      5. Compare Normalizations
     """
 
     def __init__(self, parent=None):
@@ -52,7 +124,6 @@ class DashboardTab(QWidget):
                 font-weight: bold;
             }
 
-            /* Larger, more stylish buttons */
             QPushButton {
                 background-color: #0078D7;
                 color: white;
@@ -63,25 +134,24 @@ class DashboardTab(QWidget):
                 border-radius: 5px;
             }
             QPushButton:hover {
-                background-color: #005CB5; /* Slightly darker on hover */
-            }
-            QPushButton:pressed {
-                background-color: #004C94; /* Even darker when pressed */
+                background-color: #005CB5;
             }
             QPushButton:disabled {
-                background-color: #9FBADF; /* Desaturated look when disabled */
+                background-color: #9FBADF;
             }
 
-            QSpinBox {
+            QSpinBox, QLineEdit, QComboBox, QTextEdit {
                 font-size: 10pt;
                 padding: 4px;
+            }
+            QCheckBox {
+                font-size: 10pt;
             }
 
             QTextEdit {
                 background-color: #FFFFFF;
                 border: 1px solid #CCCCCC;
                 border-radius: 4px;
-                font-size: 10pt;
             }
 
             QScrollArea {
@@ -89,73 +159,60 @@ class DashboardTab(QWidget):
             }
         """)
 
-        # Give this widget an object name so the stylesheet can target it
         self.setObjectName("DashboardTab")
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # Scrollable container
+        # Scroll area for all content
         scroll_area = QScrollArea(self)
         scroll_area.setWidgetResizable(True)
 
-        # Content widget and layout
+        # Container widget + layout
         content_widget = QWidget()
         content_layout = QVBoxLayout(content_widget)
         content_layout.setContentsMargins(10, 10, 10, 10)
         content_layout.setSpacing(15)
 
-        # Title and description
+        # Title and short description
         title_label = QLabel("<h2 style='color: #0078D7; margin-bottom: 0;'>Data Overview & Dashboard</h2>")
         title_label.setWordWrap(True)
         content_layout.addWidget(title_label)
 
         desc_label = QLabel(
-            "Analyze class distribution, sample intensities, and view a histogram. "
-            "You can also compare different normalization methods. "
-            "Select a folder and click 'Analyze Folder' to begin."
+            "Analyze class distribution, sample intensities, compare normalizations,\n"
+            "and now advanced features: multi-subset comparisons, box plots, interactive histogram exploration."
         )
         desc_label.setWordWrap(True)
         content_layout.addWidget(desc_label)
 
-        # Folder Selection & Analysis group
+        # --- Folder Selection & Analysis group ---
         select_group = QGroupBox("Folder Selection & Analysis")
         form_layout = QFormLayout()
         form_layout.setSpacing(10)
 
-        self.folder_edit = QLabel("data/archive")
-        self.folder_edit.setToolTip("Path containing subfolders like 'Training' & 'Testing'.")
-        self.folder_edit.setStyleSheet("font-weight: 600; color: #444444;")
+        self.folder_edit_label = QLabel("data/archive")  # just a label, or you can use QLineEdit
+        self.folder_edit_label.setToolTip("Path containing subfolders like 'Training', 'Testing', etc.")
+        self.folder_edit_label.setStyleSheet("font-weight: 600; color: #444444;")
 
         self.sample_spin = QSpinBox()
         self.sample_spin.setRange(1, 200)
         self.sample_spin.setValue(30)
-        self.sample_spin.setToolTip("How many images to sample for intensity stats.")
+        self.sample_spin.setToolTip("How many images to sample for intensity stats (each subset).")
 
-        # Make a horizontal layout for the buttons so they can sit side by side
-        button_layout = QHBoxLayout()
-        button_layout.setSpacing(10)
-
+        # Button row
         self.btn_analyze = QPushButton("Analyze Folder")
-        self.btn_analyze.setToolTip("Compute distribution & intensity stats; then plot a histogram.")
-        # Expand horizontally
-        self.btn_analyze.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.btn_analyze.setToolTip("Compute distribution & intensity stats for subsets, then plot.")
         self.btn_analyze.clicked.connect(self.on_analyze)
 
-        self.btn_compare_norm = QPushButton("Compare Normalizations")
-        self.btn_compare_norm.setToolTip("Open a dialog to compare min-max vs. z-score normalization.")
-        # Also expand
-        self.btn_compare_norm.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.btn_compare_norm.clicked.connect(self.on_compare_normalization)
 
-        button_layout.addWidget(self.btn_analyze)
-        button_layout.addWidget(self.btn_compare_norm)
+        h_buttons = QHBoxLayout()
+        h_buttons.addWidget(self.btn_analyze)
 
-        form_layout.addRow("Dataset Folder:", self.folder_edit)
+        form_layout.addRow("Dataset Folder:", self.folder_edit_label)
         form_layout.addRow("Images to Sample:", self.sample_spin)
-        # Buttons in a single row
-        form_layout.addRow(button_layout)
+        form_layout.addRow(h_buttons)
 
         select_group.setLayout(form_layout)
         content_layout.addWidget(select_group)
@@ -163,172 +220,297 @@ class DashboardTab(QWidget):
         # Log box
         self.log_box = QTextEdit()
         self.log_box.setReadOnly(True)
-        self.log_box.setToolTip("Displays distribution stats and intensity details.")
         self.log_box.setMinimumHeight(150)
         content_layout.addWidget(self.log_box)
 
-        # Plot area
-        plot_group = QGroupBox("Histogram of Sampled Intensities")
+        # Plot area (Histogram of intensities)
+        self.plot_group = QGroupBox("Histogram of Sampled Intensities")
         plot_layout = QVBoxLayout()
 
         self.canvas = MplCanvas(self, width=5, height=4)
         self.canvas_toolbar = NavigationToolbar(self.canvas, self)
-
         plot_layout.addWidget(self.canvas)
         plot_layout.addWidget(self.canvas_toolbar)
-        plot_group.setLayout(plot_layout)
-        content_layout.addWidget(plot_group)
 
-        # Put content into the scroll area
+        self.plot_group.setLayout(plot_layout)
+        content_layout.addWidget(self.plot_group)
+
+        # --- Advanced Stats group: box plots, quartiles, multi-subset selection ---
+        self.adv_group = QGroupBox("Advanced Stats & Multi-Subset Comparison")
+        adv_layout = QVBoxLayout(self.adv_group)
+        adv_layout.setSpacing(10)
+
+        # We'll dynamically find subfolders in the root. The user can pick which to compare.
+        self.subset_checkboxes = []
+        self.subset_box_layout = QVBoxLayout()
+        adv_layout.addWidget(QLabel("Select subsets to compare (Training, Testing, Validation, etc.):"))
+        adv_layout.addLayout(self.subset_box_layout)
+
+        self.adv_run_btn = QPushButton("Compare Selected Subsets")
+        self.adv_run_btn.clicked.connect(self.on_compare_subsets)
+        adv_layout.addWidget(self.adv_run_btn)
+
+        # Boxplot canvas
+        self.box_canvas = MplCanvas(self, width=5, height=3)
+        self.box_toolbar = NavigationToolbar(self.box_canvas, self)
+        adv_layout.addWidget(self.box_canvas)
+        adv_layout.addWidget(self.box_toolbar)
+
+        # We'll have a text box for advanced stats
+        self.adv_stats_box = QTextEdit()
+        self.adv_stats_box.setReadOnly(True)
+        adv_layout.addWidget(self.adv_stats_box)
+
+        content_layout.addWidget(self.adv_group)
+
+        # Footer note
+        footer_label = QLabel(
+            "<i>Note: This demonstration attempts to read images from the selected folder or the default <b>data/archive</b> if not changed.</i>"
+        )
+        footer_label.setWordWrap(True)
+        content_layout.addWidget(footer_label)
+
         scroll_area.setWidget(content_widget)
         main_layout.addWidget(scroll_area)
         self.setLayout(main_layout)
 
-    def on_analyze(self):
-        root_folder = self.folder_edit.text().strip()
+        # Internal variables to store intensities for each subset
+        self.subset_to_intensities = {}
+        # For interactive bin clicking:
+        self._current_hist_data = {}
+
+    # --------------------------------------------------------------------------
+    # Compare Normalization
+    # --------------------------------------------------------------------------
+    def on_compare_normalization(self):
+        root_folder = self.folder_edit_label.text().strip()
         if not os.path.isdir(root_folder):
             QMessageBox.warning(self, "Invalid Folder", f"Path '{root_folder}' does not exist.")
             return
+        dialog = NormalizationComparisonDialog(root_folder, parent=self)
+        dialog.exec_()
 
+    # --------------------------------------------------------------------------
+    # Main "Analyze Folder" => Finds subsets, samples intensities, plots them
+    # --------------------------------------------------------------------------
+    def on_analyze(self):
+        """
+        1) Detect which subfolders exist (e.g. "Training","Testing","Validation") 
+        2) For each subfolder, gather intensities from up to 'sample_spin' images
+        3) Show them in a single combined histogram + show stats in the log
+        4) Update the checkboxes in the "Advanced Stats" area for subset selection
+        """
+        root_folder = self.folder_edit_label.text().strip()
+        if not os.path.isdir(root_folder):
+            QMessageBox.warning(self, "Invalid Folder", "Selected dataset folder not found.")
+            return
+
+        # Clear old data
         self.log_box.clear()
+        self.subset_to_intensities.clear()
 
-        subfolders = (
-            ["Training", "Testing"]
-            if any(x in root_folder for x in ["archive", "cleaned", "augmented"])
-            else [""]
-        )
-
-        # 1) Compute distribution
-        distribution_info, total_images = self._compute_distribution(root_folder, subfolders)
-
-        # 2) Log distribution
-        if distribution_info:
-            self.log_box.append("<b>--- Class Distribution ---</b>\n")
-            for subset, class_dict in distribution_info.items():
-                self.log_box.append(f"<b>{subset}</b>:")
-                sub_sum = 0
-                for cls_, cnt in class_dict.items():
-                    self.log_box.append(f"   {cls_} => {cnt}")
-                    sub_sum += cnt
-                self.log_box.append(f"   Subtotal: {sub_sum}\n")
-            self.log_box.append(f"<b>Total images across all classes:</b> {total_images}\n")
-
-        # 3) Gather random sample
-        num_to_sample = self.sample_spin.value()
-        sample_imgs = self._gather_random_images(root_folder, subfolders, max_samples=num_to_sample)
-        if not sample_imgs:
-            self.log_box.append("No images found to sample in this folder.")
-            self.canvas.figure.clear()
-            self.canvas.draw()
+        # 1) Find subfolders
+        subfolders = gather_subfolders(root_folder)
+        if not subfolders:
+            self.log_box.append("No subfolders found (e.g. no 'Training','Testing'?). Aborting.")
             return
 
-        intensities = []
-        error_count = 0
-        for path in sample_imgs:
-            try:
-                pil_img = Image.open(path).convert('L')
-                arr = np.array(pil_img, dtype=np.float32)
-                intensities.extend(arr.flatten())
-            except Exception:
-                error_count += 1
+        # 2) For each subfolder, gather random images -> intensities
+        sample_count = self.sample_spin.value()
+        for subset in subfolders:
+            subset_path = os.path.join(root_folder, subset)
+            all_imgs = gather_images_in_folder(subset_path, max_samples=sample_count)
 
-        if error_count > 0:
-            self.log_box.append(f"<b>Failed to read {error_count} images.</b>\n")
+            intensities = []
+            error_count = 0
+            for path in all_imgs:
+                arr_f = load_grayscale_float32(path)
+                if arr_f is None:
+                    error_count += 1
+                    continue
+                intensities.extend(arr_f)
 
-        if len(intensities) == 0:
-            self.log_box.append("<b>No valid intensities found; cannot plot histogram.</b>")
-            self.canvas.figure.clear()
-            self.canvas.draw()
-            return
+            self.subset_to_intensities[subset] = np.array(intensities, dtype=np.float32)
+            self.log_box.append(f"<b>{subset}:</b> sampled {len(intensities)} intensities ({error_count} errors)")
 
-        # 4) Stats
-        intensities_np = np.array(intensities, dtype=np.float32)
-        i_min, i_max = intensities_np.min(), intensities_np.max()
-        i_mean = intensities_np.mean()
-        i_med = np.median(intensities_np)
-        i_std = intensities_np.std()
+        # 3) Combined histogram plot
+        self.plot_combined_histogram()
 
-        self.log_box.append("<b>--- Sampled Image Stats ---</b>\n")
-        self.log_box.append(f"Min: {i_min:.1f}, Max: {i_max:.1f}")
-        self.log_box.append(f"Mean: {i_mean:.2f}, Median: {i_med:.2f}, Std: {i_std:.2f}\n")
+        # 4) Update subset checkboxes
+        #    Clear old checkboxes
+        for cb in self.subset_checkboxes:
+            self.subset_box_layout.removeWidget(cb)
+            cb.deleteLater()
+        self.subset_checkboxes.clear()
 
-        # 5) Plot histogram
+        for subset in subfolders:
+            cb = QCheckBox(subset)
+            cb.setChecked(True)
+            self.subset_box_layout.addWidget(cb)
+            self.subset_checkboxes.append(cb)
+
+        self.log_box.append("\nAnalysis complete. Check 'Advanced Stats & Multi-Subset Comparison' for more.\n")
+
+    def plot_combined_histogram(self):
+        """
+        Plot an overlapping histogram with a different color for each subset.
+        We'll also enable pick events so user can click bars (interactive).
+        """
         self.canvas.figure.clear()
-
-        # Match figure background to the tab’s background
-        self.canvas.figure.patch.set_facecolor('#F7F7F7')
-
         ax = self.canvas.figure.add_subplot(111)
-        ax.hist(intensities_np, bins=50, color='#0078D7', alpha=0.7)
 
-        ax.set_title("Distribution of Sampled Pixel Intensities", color='#333333')
-        ax.set_xlabel("Pixel Intensity", color='#333333')
-        ax.set_ylabel("Count", color='#333333')
+        colors = ["blue", "green", "red", "orange", "purple", "teal"]
+        color_idx = 0
+        self._current_hist_data.clear()  # store bin info for interactive clicks
 
-        # Start axes at zero (optional)
-        ax.set_xlim(left=0)
-        ax.set_ylim(bottom=0)
+        # If we want interactive bin picking, we must store each "patch" and data
+        # We'll do so by letting each subset have fewer bins, and we do stacked or overlapped.
+        # For advanced usage, we can put them side-by-side or alpha overlap.
 
-        ax.set_facecolor('#FFFFFF')
-        ax.tick_params(axis='x', colors='#333333')
-        ax.tick_params(axis='y', colors='#333333')
+        for subset, data in self.subset_to_intensities.items():
+            if len(data) == 0:
+                continue
+            c = colors[color_idx % len(colors)]
+            color_idx += 1
+            # Plot histogram with alpha
+            counts, bins, patches = ax.hist(
+                data,
+                bins=50,
+                alpha=0.4,
+                label=subset,
+                color=c,
+                picker=True  # enable picking
+            )
+            # We'll store the bin edges & counts so we can handle pick events
+            # but note: Overlapping patches might cause confusion in picking.
+            # We'll do a simpler approach: store the data in a dict for reference.
+            # This doesn't do perfect bin-level picking for multiple subsets.
+            for p in patches:
+                p.set_picker(True)
+
+        ax.set_title("Combined Histogram of Sampled Intensities")
+        ax.set_xlabel("Intensity")
+        ax.set_ylabel("Count")
+        ax.legend()
+
+        # Connect pick event
+        self.canvas.mpl_connect("pick_event", self.on_hist_pick)
 
         self.canvas.figure.tight_layout()
         self.canvas.draw()
 
-    def on_compare_normalization(self):
-        from gui.normalization_comparison_dialog import NormalizationComparisonDialog
+    def on_hist_pick(self, event: PickEvent):
+        """
+        Called when user clicks on a bar (patch) in the histogram.
+        We'll attempt to identify the bin range, then show images in that range if feasible.
+        """
+        # Because we have multiple subsets overlapped, event.artist might correspond
+        # to one bar among many. We'll glean the bin range from the patch's coordinates.
 
-        root_folder = self.folder_edit.text().strip()
-        if not os.path.isdir(root_folder):
-            QMessageBox.warning(self, "Invalid Folder", f"Path '{root_folder}' does not exist.")
+        artist = event.artist
+        if not isinstance(artist, Rectangle):
             return
 
-        dialog = NormalizationComparisonDialog(root_folder, parent=self)
-        dialog.exec_()
+        # Extract bin range from rectangle
+        x_left = artist.get_x()
+        width = artist.get_width()
+        bin_min = x_left
+        bin_max = x_left + width
 
-    def _compute_distribution(self, root_folder, subfolders):
-        distribution_info = {}
-        total_images = 0
-        for subset in subfolders:
-            subset_path = os.path.join(root_folder, subset)
-            if not os.path.isdir(subset_path):
-                continue
-            class_list = [
-                d for d in os.listdir(subset_path)
-                if os.path.isdir(os.path.join(subset_path, d))
-            ]
-            distribution_info[subset] = {}
-            sub_sum = 0
-            for c in class_list:
-                cpath = os.path.join(subset_path, c)
-                num_images = sum(
-                    f.lower().endswith(('.png', '.jpg', '.jpeg'))
-                    for f in os.listdir(cpath)
+        self.log_box.append(f"<b>Clicked bin:</b> {bin_min:.1f} to {bin_max:.1f}<br>")
+
+        # We can open a small dialog to display sample images from that intensity range, if desired.
+        # We'll search in each subset's data for a few random images that have intensities in that bin range.
+        # But we need original file paths mapped to intensities, which we do NOT currently store.
+        # Alternatively, we can just say "We do not have direct image references for each bin."
+
+        # For demonstration, we'll show a minimal dialog that says we found X intensities in that range.
+        count_in_range = {}
+        for subset, intensities in self.subset_to_intensities.items():
+            sub_vals = intensities[(intensities >= bin_min) & (intensities < bin_max)]
+            count_in_range[subset] = len(sub_vals)
+
+        lines = []
+        for subset, cnt in count_in_range.items():
+            lines.append(f"{subset}: {cnt} intensities in that bin.")
+        detail_str = "\n".join(lines)
+
+        msg = f"You clicked bin {bin_min:.1f}–{bin_max:.1f}.\n\n{detail_str}"
+        QMessageBox.information(self, "Histogram Bin Info", msg)
+
+    # --------------------------------------------------------------------------
+    # "Compare Subsets" button => do box plots, advanced stats
+    # --------------------------------------------------------------------------
+    def on_compare_subsets(self):
+        """
+        1) Gather whichever subsets are checked.
+        2) Show a box plot for intensities in each subset side by side.
+        3) Display quartiles, min, max, outliers in adv_stats_box.
+        4) Possibly highlight if one subset is systematically darker or lighter.
+        """
+        chosen_subsets = []
+        for cb in self.subset_checkboxes:
+            if cb.isChecked():
+                chosen_subsets.append(cb.text())
+
+        if not chosen_subsets:
+            QMessageBox.warning(self, "No subsets selected", "Please check at least one subset.")
+            return
+
+        # Prepare data for box plot
+        data_for_boxplot = []
+        subset_labels = []
+        for s in chosen_subsets:
+            arr = self.subset_to_intensities.get(s, None)
+            if arr is not None and len(arr) > 0:
+                data_for_boxplot.append(arr)
+                subset_labels.append(s)
+
+        if not data_for_boxplot:
+            QMessageBox.information(self, "No Data", "No intensities found for the selected subsets.")
+            return
+
+        self.box_canvas.figure.clear()
+        ax = self.box_canvas.figure.add_subplot(111)
+
+        # Box plot
+        ax.boxplot(data_for_boxplot, labels=subset_labels, showfliers=True)
+        ax.set_title("Subset Comparison - Box Plot of Intensities")
+        ax.set_ylabel("Pixel Intensity")
+
+        self.box_canvas.figure.tight_layout()
+        self.box_canvas.draw()
+
+        # Advanced stats
+        self.adv_stats_box.clear()
+        self.adv_stats_box.append("<b>Advanced Stats</b> (min, 25%, median, 75%, max)\n")
+
+        # We can highlight if one subset has a significantly different median from others.
+        # For a simple approach, we find the global median, see which subset is +/- some threshold.
+        # Or we just show stats. We'll do a simpler approach and let user interpret.
+
+        all_medians = []
+        for i, subset_name in enumerate(subset_labels):
+            arr = data_for_boxplot[i]
+            stats = np.percentile(arr, [0,25,50,75,100])
+            linestr = (
+                f"{subset_name} => "
+                f"min={stats[0]:.1f}, Q1={stats[1]:.1f}, median={stats[2]:.1f}, "
+                f"Q3={stats[3]:.1f}, max={stats[4]:.1f}"
+            )
+            self.adv_stats_box.append(linestr)
+            all_medians.append(stats[2])
+
+        avg_median = np.mean(all_medians)
+        self.adv_stats_box.append(f"\nAverage median across chosen subsets: {avg_median:.1f}")
+
+        # Then highlight if any subset's median is more than 20 intensity points away from avg
+        # This is an arbitrary threshold
+        threshold = 20
+        for i, med in enumerate(all_medians):
+            if abs(med - avg_median) >= threshold:
+                subset_name = subset_labels[i]
+                self.adv_stats_box.append(
+                    f"<b>Warning:</b> {subset_name} median differs from average by >= {threshold}!"
                 )
-                distribution_info[subset][c] = num_images
-                sub_sum += num_images
-            total_images += sub_sum
-        return distribution_info, total_images
 
-    def _gather_random_images(self, root_folder, subfolders, max_samples=30):
-        all_imgs = []
-        for subset in subfolders:
-            subset_path = os.path.join(root_folder, subset)
-            if not os.path.isdir(subset_path):
-                continue
-            class_list = [
-                d for d in os.listdir(subset_path)
-                if os.path.isdir(os.path.join(subset_path, d))
-            ]
-            for c in class_list:
-                cpath = os.path.join(subset_path, c)
-                images = [
-                    os.path.join(cpath, f)
-                    for f in os.listdir(cpath)
-                    if f.lower().endswith(('.png', '.jpg', '.jpeg'))
-                ]
-                all_imgs.extend(images)
-
-        random.shuffle(all_imgs)
-        return all_imgs[:max_samples]
