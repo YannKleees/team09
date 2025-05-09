@@ -1,5 +1,3 @@
-# File: gui/augmentation_tab.py
-
 import os
 import random
 import math
@@ -21,10 +19,8 @@ from logic.augmentation import (
 )
 
 import numpy as np
-import torchvision.transforms as T
-import torchvision.transforms.functional as F
 
-# Additional helper to count distribution
+
 def count_distribution(root_dir):
     """
     Return a dict:
@@ -51,21 +47,21 @@ def count_distribution(root_dir):
                 dist[f"{subset}/{cls_}"] = len(images)
     return dist
 
+
 class AugmentationWorker(QThread):
     """
-    Bulk augmentation in background. We always do balance_classes=True internally.
+    Bulk augmentation in background, using a single `final_target` for each class.
     """
     progress = pyqtSignal(int, str)
     finished = pyqtSignal(int, list)  # (total_new_images, error_log)
 
     def __init__(
         self,
-        copies=2,
+        final_target=2000,
         rotate_deg=15,
         do_rotate=True,
         do_bc=True,
         do_gamma=True,
-        # we remove balance_classes param => always True
         do_flip=False,
         do_perspective=False,
         do_crop=False,
@@ -78,7 +74,7 @@ class AugmentationWorker(QThread):
         parent=None
     ):
         super().__init__(parent)
-        self.copies = copies
+        self.final_target = final_target
         self.rotate_deg = rotate_deg
         self.do_rotate = do_rotate
         self.do_bc = do_bc
@@ -98,16 +94,14 @@ class AugmentationWorker(QThread):
             self.progress.emit(pval, msg)
 
         try:
-            # always balanced
             total_new_images, error_log = bulk_augment_dataset(
                 src_root="cleaned_data",
                 dst_root="augmented_data",
-                copies_per_image=self.copies,
+                final_target=self.final_target,
                 rotate_deg=self.rotate_deg,
                 do_rotate=self.do_rotate,
                 do_brightness_contrast=self.do_bc,
                 do_gamma=self.do_gamma,
-                balance_classes=True,  # forced
                 do_flip=self.do_flip,
                 do_perspective=self.do_perspective,
                 do_crop=self.do_crop,
@@ -125,22 +119,19 @@ class AugmentationWorker(QThread):
 
 class AugmentationTab(QWidget):
     """
-    Reorganized to use subtabs:
+    Two subtabs:
       - Tab 1: Preview (multi-preview)
-      - Tab 2: Bulk Augmentation
-      - ALWAYS balanced => no checkbox
-      - Add a 'Distribution Dashboard' group to compare cleaned vs. augmented
+      - Tab 2: Bulk Augmentation => each class up to 'final_target'
     """
     def __init__(self, parent=None):
         super().__init__(parent)
 
         main_layout = QVBoxLayout(self)
 
-        intro_label = QLabel("<h3>Data Augmentation (Balanced)</h3>")
+        intro_label = QLabel("<h3>Data Augmentation (Fixed Target per Class)</h3>")
         intro_label.setWordWrap(True)
         main_layout.addWidget(intro_label)
 
-        # Sub-tab widget
         self.sub_tabs = QTabWidget()
         self.sub_tabs.setTabPosition(QTabWidget.North)
 
@@ -160,12 +151,6 @@ class AugmentationTab(QWidget):
     # PREVIEW TAB
     # ----------------------------------------------------------------
     def _create_preview_tab(self):
-        ...
-        # (identical to your advanced version)
-        # Just copy/paste the entire code from your final version above
-        # minus the "balance_chk" references, etc.
-        # We'll show the full final code snippet below for clarity.
-        # ...
         preview_widget = QWidget()
         layout = QVBoxLayout(preview_widget)
 
@@ -329,22 +314,20 @@ class AugmentationTab(QWidget):
         bulk_widget = QWidget()
         layout = QVBoxLayout(bulk_widget)
 
-        # 1) The main config box
         bulk_box = QGroupBox("Bulk Augmentation Configuration")
         bform = QFormLayout()
 
-        self.copy_spin = QSpinBox()
-        self.copy_spin.setRange(1, 20)
-        self.copy_spin.setValue(2)
+        # final target spin
+        self.target_spin = QSpinBox()
+        self.target_spin.setRange(1, 99999)
+        self.target_spin.setValue(3000)
 
-        # Rotation
         self.bulk_rotate_chk = QCheckBox("Rotate?")
         self.bulk_rotate_chk.setChecked(True)
         self.bulk_rotate_slider = QSlider(Qt.Horizontal)
         self.bulk_rotate_slider.setRange(0, 60)
         self.bulk_rotate_slider.setValue(15)
 
-        # B/C
         self.bulk_bc_chk = QCheckBox("Brightness/Contrast?")
         self.bulk_bc_chk.setChecked(True)
         self.bulk_b_min = QDoubleSpinBoxRange(0.1, 2.0, 0.85, "Bmin")
@@ -352,18 +335,14 @@ class AugmentationTab(QWidget):
         self.bulk_c_min = QDoubleSpinBoxRange(0.1, 2.0, 0.85, "Cmin")
         self.bulk_c_max = QDoubleSpinBoxRange(0.1, 2.0, 1.15, "Cmax")
 
-        # Gamma
         self.bulk_gamma_chk = QCheckBox("Gamma?")
         self.bulk_gamma_chk.setChecked(True)
         self.bulk_g_min = QDoubleSpinBoxRange(0.1, 2.0, 0.85, "Gmin")
         self.bulk_g_max = QDoubleSpinBoxRange(0.1, 2.0, 1.15, "Gmax")
 
-        # Additional toggles
         self.bulk_flip_chk = QCheckBox("Flip?")
         self.bulk_perspective_chk = QCheckBox("Perspective?")
         self.bulk_crop_chk = QCheckBox("Crop?")
-
-        # No more "Balance Classes?" => always balanced
 
         self.bulk_btn = QPushButton("Start Bulk Augmentation")
         self.bulk_btn.clicked.connect(self.on_bulk_augment)
@@ -373,15 +352,13 @@ class AugmentationTab(QWidget):
         self.aug_log = QTextEdit()
         self.aug_log.setReadOnly(True)
 
-        bform.addRow("Copies per Image:", self.copy_spin)
+        bform.addRow("Final Target (images per class):", self.target_spin)
 
-        # rotate
         rot_layout = QHBoxLayout()
         rot_layout.addWidget(self.bulk_rotate_chk)
         rot_layout.addWidget(self.bulk_rotate_slider)
         bform.addRow("Rotation:", rot_layout)
 
-        # B/C
         bc_line = QHBoxLayout()
         bc_line.addWidget(self.bulk_bc_chk)
         bform.addRow("Bright/Contrast?", bc_line)
@@ -396,7 +373,6 @@ class AugmentationTab(QWidget):
         bc3_line.addWidget(self.bulk_c_max)
         bform.addRow("Contrast Range:", bc3_line)
 
-        # Gamma
         g_line = QHBoxLayout()
         g_line.addWidget(self.bulk_gamma_chk)
         bform.addRow("Gamma?", g_line)
@@ -406,7 +382,6 @@ class AugmentationTab(QWidget):
         g2_line.addWidget(self.bulk_g_max)
         bform.addRow("Gamma Range:", g2_line)
 
-        # advanced toggles
         adv_line = QHBoxLayout()
         adv_line.addWidget(self.bulk_flip_chk)
         adv_line.addWidget(self.bulk_perspective_chk)
@@ -420,12 +395,11 @@ class AugmentationTab(QWidget):
         bulk_box.setLayout(bform)
         layout.addWidget(bulk_box)
 
-        # 2) Distribution Dashboard
         dist_box = QGroupBox("Distribution Dashboard")
         dist_layout = QVBoxLayout(dist_box)
         info_label = QLabel(
             "Shows how class counts changed from cleaned_data to augmented_data "
-            "(always balanced)."
+            "(each class is brought up to at least final_target)."
         )
         info_label.setWordWrap(True)
         dist_layout.addWidget(info_label)
@@ -434,7 +408,6 @@ class AugmentationTab(QWidget):
         self.dist_btn.clicked.connect(self.on_show_distribution)
         dist_layout.addWidget(self.dist_btn)
 
-        # We'll place a small Matplotlib canvas for side-by-side bar chart
         self.dist_canvas = MplCanvas(self, width=6, height=4)
         dist_toolbar = NavigationToolbar(self.dist_canvas, self)
         dist_layout.addWidget(self.dist_canvas)
@@ -448,7 +421,7 @@ class AugmentationTab(QWidget):
         self.aug_log.clear()
         self.aug_progress.setValue(0)
 
-        copies = self.copy_spin.value()
+        final_target = self.target_spin.value()
         rotate_deg = self.bulk_rotate_slider.value() if self.bulk_rotate_chk.isChecked() else 0
         do_rotate = self.bulk_rotate_chk.isChecked()
         do_bc = self.bulk_bc_chk.isChecked()
@@ -465,7 +438,7 @@ class AugmentationTab(QWidget):
         g_max = self.bulk_g_max.value()
 
         self.worker = AugmentationWorker(
-            copies=copies,
+            final_target=final_target,
             rotate_deg=rotate_deg,
             do_rotate=do_rotate,
             do_bc=do_bc,
@@ -491,51 +464,63 @@ class AugmentationTab(QWidget):
     def on_aug_finished(self, total_new_images, error_log):
         self.aug_progress.setValue(100)
         self.aug_progress.setFormat("Finished")
-        self.aug_log.append(f"Total new images: {total_new_images}")
+        self.aug_log.append(f"Total new images created: {total_new_images}")
         if error_log:
             self.aug_log.append("<b>Errors:</b>")
             for e in error_log:
                 self.aug_log.append(e)
 
     def on_show_distribution(self):
-        """
-        Compare class distribution in 'cleaned_data' vs. 'augmented_data',
-        then plot side by side in a bar chart.
-        """
-        import matplotlib.pyplot as plt
-        from collections import OrderedDict
-
         cleaned_dist = count_distribution("cleaned_data")
         aug_dist = count_distribution("augmented_data")
 
-        # Build sorted list of keys
-        # We might have keys like "Training/ClassA", "Training/ClassB"...
-        all_keys = set(cleaned_dist.keys()).union(set(aug_dist.keys()))
-        all_keys = sorted(all_keys)  # alphabetical => e.g. "Testing/ClassA" etc.
+        train_cleaned_dist = {k: v for k, v in cleaned_dist.items() if k.startswith("Training/")}
+        train_aug_dist = {k: v for k, v in aug_dist.items() if k.startswith("Training/")}
 
-        cleaned_vals = []
-        aug_vals = []
-        for k in all_keys:
-            cleaned_vals.append(cleaned_dist.get(k, 0))
-            aug_vals.append(aug_dist.get(k, 0))
+        all_keys = sorted(set(train_cleaned_dist.keys()).union(train_aug_dist.keys()))
+        cleaned_vals = [train_cleaned_dist.get(k, 0) for k in all_keys]
+        aug_vals = [train_aug_dist.get(k, 0) for k in all_keys]
 
-        # Plot them side by side
         self.dist_canvas.figure.clear()
         ax = self.dist_canvas.figure.subplots()
 
         x_positions = np.arange(len(all_keys))
         width = 0.35
-        ax.bar(x_positions - width/2, cleaned_vals, width, label="Cleaned")
-        ax.bar(x_positions + width/2, aug_vals, width, label="Augmented")
+
+        bars_cleaned = ax.bar(x_positions - width/2, cleaned_vals, width, label="Cleaned")
+        bars_aug = ax.bar(x_positions + width/2, aug_vals, width, label="Augmented")
+
+        for bar in bars_cleaned:
+            height = bar.get_height()
+            ax.text(
+                bar.get_x() + bar.get_width()/2, height + 0.5,
+                f"{int(height)}", ha='center', va='bottom',
+                color="blue", fontsize=8
+            )
+
+        for bar in bars_aug:
+            height = bar.get_height()
+            ax.text(
+                bar.get_x() + bar.get_width()/2, height + 0.5,
+                f"{int(height)}", ha='center', va='bottom',
+                color="orange", fontsize=8
+            )
 
         ax.set_ylabel("Image Count")
-        ax.set_title("Class Distribution: Cleaned vs. Augmented")
+        ax.set_title("Training Set Only: Cleaned vs. Augmented")
         ax.set_xticks(x_positions)
         ax.set_xticklabels(all_keys, rotation=45, ha='right')
         ax.legend()
 
         self.dist_canvas.figure.tight_layout()
         self.dist_canvas.draw()
+
+        self.aug_log.append("<b>Training set distribution comparison (cleaned vs. augmented):</b>")
+        for k in all_keys:
+            c_val = train_cleaned_dist.get(k, 0)
+            a_val = train_aug_dist.get(k, 0)
+            self.aug_log.append(f"{k}: cleaned={c_val}  augmented={a_val}")
+
 
 # Helper widget for double spin boxes
 from PyQt5.QtWidgets import QDoubleSpinBox

@@ -8,8 +8,7 @@ from PIL import Image
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QGroupBox, QPushButton,
     QTextEdit, QMessageBox, QHBoxLayout, QSlider, QScrollArea,
-    QComboBox, QLineEdit, QCheckBox, QSpinBox, QFileDialog, QFormLayout,
-    QSizePolicy
+    QComboBox, QLineEdit, QSpinBox, QFileDialog, QFormLayout
 )
 from PyQt5.QtCore import Qt
 
@@ -22,25 +21,20 @@ from gui.widgets import MplCanvas
 from logic.advanced_eda import (
     gather_random_images,
     collect_resolutions,
-    detect_poor_quality,
     histogram_equalize,
     gather_subset_resolutions
 )
-from logic.augmentation import preview_augmentation
-from logic.comparison import load_image_as_grayscale
-
+# Note: Removed imports for detect_poor_quality and augmentation preview.
 
 class InfoTab(QWidget):
     """
     An “ultimate guide” tab that:
-      1) Explains each application tab (Preprocessing, Augmentation, HPC, etc.).
+      1) Explains each application tab (Preprocessing, etc.).
       2) Demonstrates how they work with small interactive demos:
-         - resolution stats & poor-quality detection
+         - resolution stats
          - histogram equalization
          - gamma correction
          - subset comparisons
-         - augmentation previews
-         - a mini HPC search simulation
     """
 
     def __init__(self, parent=None):
@@ -64,9 +58,9 @@ class InfoTab(QWidget):
         content_layout.addWidget(title_label)
 
         intro_label = QLabel(
-            "This tab provides an all-in-one overview of every other tab, "
+            "This tab provides an all-in-one overview of the other tabs, "
             "plus interactive EDA demos to illustrate how your data changes "
-            "during Preprocessing, Augmentation, HPC, and more."
+            "during Preprocessing and more."
         )
         intro_label.setWordWrap(True)
         content_layout.addWidget(intro_label)
@@ -90,11 +84,9 @@ class InfoTab(QWidget):
         overview_layout.addWidget(self._make_label(
             "<b>Comparison Tab:</b> Let’s you see the same file in raw, cleaned, or augmented sets side by side."
         ))
+        # Removed the HPC line from the overview
         overview_layout.addWidget(self._make_label(
-            "<b>Auto/HPC Search Tab:</b> Tries different hyperparameters in quick training loops; logs the best combos."
-        ))
-        overview_layout.addWidget(self._make_label(
-            "<b>Inference Tab:</b> Loads a final trained model to classify a single image (binary, multi, or double)."
+            "<b>Inference Tab:</b> Loads a final trained model to classify a single image."
         ))
 
         content_layout.addWidget(overview_group)
@@ -118,10 +110,7 @@ class InfoTab(QWidget):
         self.max_images_spin.setValue(200)
         controls_form.addRow("Max Images to Sample:", self.max_images_spin)
 
-        # Poor-quality
-        self.pq_chk = QCheckBox("Enable poor-quality detection?")
-        self.pq_chk.setChecked(True)
-        controls_form.addRow(self.pq_chk)
+        # Removed the poor-quality detection checkbox
 
         # Resolution bin slider
         self.res_bin_slider = QSlider(Qt.Horizontal)
@@ -146,8 +135,8 @@ class InfoTab(QWidget):
 
         content_layout.addWidget(controls_box)
 
-        # ------------------- Resolution & Poor Quality Demo -------------------
-        self.res_group = QGroupBox("Resolution & Poor-Quality Demo")
+        # ------------------- Resolution Demo -------------------
+        self.res_group = QGroupBox("Resolution Demo")
         res_layout = QVBoxLayout(self.res_group)
 
         self.res_text = QTextEdit()
@@ -225,59 +214,8 @@ class InfoTab(QWidget):
 
         content_layout.addWidget(self.subset_group)
 
-        # ------------------- Augmentation Preview Demo -------------------
-        self.aug_group = QGroupBox("Augmentation Preview Demo")
-        aug_layout = QVBoxLayout(self.aug_group)
-
-        aug_label = QLabel(
-            "Pick an image, see multiple random transformations side by side. "
-            "Mirrors the 'preview' functionality in the Augmentation Tab."
-        )
-        aug_label.setWordWrap(True)
-        aug_layout.addWidget(aug_label)
-
-        self.aug_img_edit = QLineEdit()
-        self.aug_img_edit.setPlaceholderText("Select image for augmentation preview.")
-        aug_btn = QPushButton("Browse Image...")
-        aug_btn.clicked.connect(self._on_browse_augment_img)
-
-        aug_hbox = QHBoxLayout()
-        aug_hbox.addWidget(self.aug_img_edit)
-        aug_hbox.addWidget(aug_btn)
-        aug_layout.addLayout(aug_hbox)
-
-        self.aug_preview_btn = QPushButton("Generate Augmented Previews")
-        self.aug_preview_btn.clicked.connect(self.on_generate_aug_preview)
-        aug_layout.addWidget(self.aug_preview_btn)
-
-        self.aug_canvas = MplCanvas(self, width=7, height=5)
-        self.aug_toolbar = NavigationToolbar(self.aug_canvas, self)
-        aug_layout.addWidget(self.aug_canvas)
-        aug_layout.addWidget(self.aug_toolbar)
-
-        content_layout.addWidget(self.aug_group)
-
-        # ------------------- HPC Mini-Demo -------------------
-        self.hpc_group = QGroupBox("HPC (Hyperparameter Tuning) Mini-Demo")
-        hpc_layout = QVBoxLayout(self.hpc_group)
-
-        hpc_desc = QLabel(
-            "Simulated HPC search with random results for different hyperparams (e.g., LR). "
-            "In the real HPC tab, partial training is done for each combo."
-        )
-        hpc_desc.setWordWrap(True)
-        hpc_layout.addWidget(hpc_desc)
-
-        self.hpc_run_btn = QPushButton("Simulate HPC Search")
-        self.hpc_run_btn.clicked.connect(self.on_hpc_demo)
-        hpc_layout.addWidget(self.hpc_run_btn)
-
-        self.hpc_canvas = MplCanvas(self, width=7, height=5)
-        self.hpc_toolbar = NavigationToolbar(self.hpc_canvas, self)
-        hpc_layout.addWidget(self.hpc_canvas)
-        hpc_layout.addWidget(self.hpc_toolbar)
-
-        content_layout.addWidget(self.hpc_group)
+        # Removed the Augmentation Preview Demo block
+        # Removed the HPC Mini-Demo block
 
         # ------------------- Log / Output -------------------
         self.log_area = QTextEdit()
@@ -297,7 +235,6 @@ class InfoTab(QWidget):
         # Internals
         self.gamma_sample_img = None
         self.selected_eq_image = None
-        self.aug_img_path = None
 
     # -----------------------------------------
     # Helper: a word-wrapped QLabel
@@ -361,18 +298,11 @@ class InfoTab(QWidget):
         else:
             self.res_text.append("No valid images for resolution stats.\n")
 
-        # 2) optional poor-quality
-        if self.pq_chk.isChecked():
-            pq = detect_poor_quality(all_imgs)
-            self.log_area.append(f"{len(pq)} poor-quality scans found (if any).")
-        else:
-            self.log_area.append("Poor-quality detection disabled.\n")
-
-        # 3) plot resolution distribution
+        # 2) plot resolution distribution
         bins = self.res_bin_slider.value()
         self._plot_res_distributions(widths, heights, bins)
 
-        # 4) hist eq => pick user-chosen or random
+        # 3) hist eq => pick user-chosen or random
         eq_path = self.eq_img_edit.text().strip()
         if eq_path and os.path.isfile(eq_path):
             self.selected_eq_image = eq_path
@@ -380,7 +310,7 @@ class InfoTab(QWidget):
             self.selected_eq_image = random.choice(all_imgs)
         self._show_hist_eq_demo(self.selected_eq_image)
 
-        # 5) gamma => pick random
+        # 4) gamma => pick random
         self.gamma_sample_img = random.choice(all_imgs)
         self._update_gamma_demo()
 
@@ -519,82 +449,3 @@ class InfoTab(QWidget):
 
         fig.tight_layout()
         self.subset_canvas.draw()
-
-    # -----------------------------------------
-    # Augmentation Preview
-    # -----------------------------------------
-    def _on_browse_augment_img(self):
-        dlg = QFileDialog(self, "Select Image for Augmentation Preview")
-        dlg.setNameFilter("Images (*.png *.jpg *.jpeg)")
-        if dlg.exec_():
-            path = dlg.selectedFiles()[0]
-            self.aug_img_edit.setText(path)
-            self.aug_img_path = path
-
-    def on_generate_aug_preview(self):
-        if not self.aug_img_path or not os.path.isfile(self.aug_img_path):
-            QMessageBox.warning(self, "No Image", "Please select a valid image for augmentation preview.")
-            return
-
-        pil_img = load_image_as_grayscale(self.aug_img_path)
-        if pil_img is None:
-            self.log_area.append("Could not load the chosen image.")
-            return
-
-        self.aug_canvas.figure.clear()
-        fig = self.aug_canvas.figure
-        n_cols = 4
-        axarr = fig.subplots(1, n_cols, figsize=(14, 4))  # even bigger horizontally
-
-        axarr[0].imshow(pil_img, cmap='gray')
-        axarr[0].set_title("Original")
-        axarr[0].axis('off')
-
-        for i in range(1, n_cols):
-            aug_tensor = preview_augmentation(
-                pil_image=pil_img,
-                rotate_deg=15,
-                do_rotate=True,
-                do_brightness_contrast=True,
-                do_gamma=True,
-                do_minmax=False,
-                do_flip=True,
-                do_perspective=False,
-                do_crop=False
-            )
-            arr = aug_tensor.squeeze().numpy()
-            axarr[i].imshow(arr, cmap='gray')
-            axarr[i].set_title(f"Aug {i}")
-            axarr[i].axis('off')
-
-        fig.tight_layout()
-        self.aug_canvas.draw()
-
-        self.log_area.append("Random Augmentation previews generated.\n")
-
-    # -----------------------------------------
-    # HPC Demo
-    # -----------------------------------------
-    def on_hpc_demo(self):
-        import random
-        combos = [0.0001, 0.0005, 0.001, 0.003, 0.01]
-        val_accs = [random.uniform(70, 95) for _ in combos]
-
-        self.hpc_canvas.figure.clear()
-        ax = self.hpc_canvas.figure.add_subplot(111)
-
-        xvals = range(len(combos))
-        ax.bar(xvals, val_accs, color='purple', alpha=0.6)
-        ax.set_title("Simulated HPC: LR vs. Val Accuracy")
-        ax.set_xlabel("Combo Index")
-        ax.set_ylabel("Val Accuracy (%)")
-        ax.set_xticks(xvals)
-        ax.set_xticklabels([str(c) for c in combos], rotation=45)
-
-        self.hpc_canvas.figure.tight_layout()
-        self.hpc_canvas.draw()
-
-        best_val = max(val_accs)
-        idx_best = val_accs.index(best_val)
-        best_lr = combos[idx_best]
-        self.log_area.append(f"HPC Demo => Best LR: {best_lr} with ValAcc ~ {best_val:.2f}%\n")
