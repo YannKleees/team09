@@ -2,11 +2,12 @@
 
 import os
 import glob
+import numpy as np
 from PIL import Image
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QGroupBox, QHBoxLayout,
-    QPushButton, QComboBox, QTextEdit, QMessageBox
+    QPushButton, QComboBox, QTextEdit, QMessageBox, QScrollArea
 )
 from PyQt5.QtCore import Qt
 
@@ -17,15 +18,18 @@ from logic.comparison import load_image_as_grayscale
 class CompareTab(QWidget):
     """
     Lets you browse images in a chosen dataset folder, then tries to find the
-    same filename in the other sets to show them side by side.
+    same filename in other sets (raw, cleaned, augmented). Now shows:
+      - The Original, Cleaned, plus *all* augmented variants side by side
+      - Below each image, a histogram with mean/std/min/max/median
+      - Color-coded borders for each type
     """
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setLayout(QVBoxLayout())
 
         info_label = QLabel(
-            "<h3>Compare: Raw vs. Cleaned vs. Augmented</h3>"
-            "Browse to see the same image (by filename) across all three sets."
+            "<h3>Compare: Raw vs. Cleaned vs. Augmented (All Variants)</h3>"
+            "Browse to see how one filename appears across raw, cleaned, and multiple augmentations."
         )
         info_label.setWordWrap(True)
         self.layout().addWidget(info_label)
@@ -64,14 +68,15 @@ class CompareTab(QWidget):
         self.layout().addWidget(browse_group)
 
         # -----------------------------------
-        # Canvas for side-by-side images
+        # ScrollArea to hold the big figure
         # -----------------------------------
-        self.canvas = MplCanvas(self, width=10, height=4)
-        self.layout().addWidget(self.canvas)
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.layout().addWidget(self.scroll_area)
 
         # Log area
         self.log_box = QTextEdit()
-        self.log_box.setToolTip("Shows which files were found in each dataset.")
+        self.log_box.setToolTip("Shows which files were found plus info about augmented images.")
         self.log_box.setReadOnly(True)
         self.layout().addWidget(self.log_box)
 
@@ -122,45 +127,145 @@ class CompareTab(QWidget):
         curr_image_path = self.all_images[self.curr_index]
         base_name = os.path.basename(curr_image_path)
 
+        # We'll try to locate the same file in the raw, cleaned, and augmented sets
         root_orig = "data/archive/Training"
         root_clean = "cleaned_data/Training"
         root_aug = "augmented_data/Training"
 
         path_orig = self._locate_image(root_orig, base_name)
         path_clean = self._locate_image(root_clean, base_name)
-        path_aug = self._locate_image(root_aug, base_name)
+        aug_paths = self._locate_all_aug_images(root_aug, base_name)
 
-        self.canvas.figure.clear()
-        axarr = self.canvas.figure.subplots(1, 3)
+        # Build an ordered list for plotting
+        images_and_labels = []
+        if path_orig:
+            images_and_labels.append((path_orig, "Original"))
+        if path_clean:
+            images_and_labels.append((path_clean, "Cleaned"))
+        for i, ap in enumerate(aug_paths):
+            images_and_labels.append((ap, f"Aug{i+1}"))
 
-        self._plot_image(axarr[0], path_orig, "Original")
-        self._plot_image(axarr[1], path_clean, "Cleaned")
-        self._plot_image(axarr[2], path_aug, "Augmented")
+        from gui.widgets import MplCanvas
+        new_canvas = MplCanvas(self, width=5, height=4)
+        fig = new_canvas.figure
 
-        self.canvas.figure.tight_layout()
-        self.canvas.draw()
+        if not images_and_labels:
+            # No images found => placeholder
+            fig.clear()
+            ax = fig.add_subplot(111)
+            ax.text(0.5, 0.5, "No matching images found in raw/cleaned/aug sets.", ha='center', va='center')
+            ax.axis('off')
+            new_canvas.draw()
 
+            self.scroll_area.setWidget(new_canvas)
+            self.log_box.clear()
+            self.log_box.append(f"No matching images for '{base_name}' in raw/cleaned/aug.")
+            return
+
+        n_images = len(images_and_labels)
+
+        # Fix for older Matplotlib: can't pass 'figsize' into subplots(), so do:
+        fig.clear()
+        fig.set_size_inches(4*n_images, 6)
+        axes = fig.subplots(nrows=2, ncols=n_images)
+
+        # If there's only 1 image, 'axes' won't be 2D => reshape to (2,1)
+        if n_images == 1:
+            axes = np.array([axes]).reshape(2,1)
+
+        # Helper to color the spines
+        def color_spines(ax, color="black", lw=2):
+            for spine in ax.spines.values():
+                spine.set_edgecolor(color)
+                spine.set_linewidth(lw)
+
+        for col_idx, (img_path, label_str) in enumerate(images_and_labels):
+            ax_img = axes[0, col_idx]
+            ax_hist = axes[1, col_idx]
+
+            arr = load_image_as_grayscale(img_path)
+            if arr is None:
+                ax_img.text(0.5, 0.5, "Error reading", ha='center', va='center', color='red')
+                ax_img.axis('off')
+                ax_hist.text(0.5, 0.5, "No data", ha='center', va='center', color='red')
+                ax_hist.axis('off')
+                continue
+
+            ax_img.imshow(arr, cmap='gray')
+            ax_img.axis('off')
+            ax_img.set_title(label_str, fontsize=10)
+
+            # Color-code the border
+            if label_str.lower().startswith("original"):
+                color_spines(ax_img, "green")
+            elif label_str.lower().startswith("clean"):
+                color_spines(ax_img, "blue")
+            else:
+                # any "Aug" => orange
+                color_spines(ax_img, "darkorange")
+
+            # Build histogram
+            flat = np.array(arr).ravel().astype(np.float32)
+            ax_hist.hist(flat, bins=50, color='blue', alpha=0.6)
+            ax_hist.set_xlabel("Intensity", fontsize=8)
+            ax_hist.set_ylabel("Count", fontsize=8)
+
+            # Compute stats
+            mean_val = float(flat.mean())
+            std_val = float(flat.std())
+            mn_val = float(flat.min())
+            mx_val = float(flat.max())
+            med_val = float(np.median(flat))
+
+            ax_hist.set_title(
+                f"Mean={mean_val:.1f}, Std={std_val:.1f}\n"
+                f"Min={mn_val:.0f}, Max={mx_val:.0f}, Med={med_val:.1f}",
+                fontsize=9
+            )
+
+        fig.tight_layout()
+        new_canvas.draw()
+        self.scroll_area.setWidget(new_canvas)
+
+        # Update the log box
         self.log_box.clear()
-        self.log_box.append(f"Comparing '{base_name}' across sets:")
+        self.log_box.append(f"<b>Comparing '{base_name}' across sets:</b>")
         self.log_box.append(f"Index {self.curr_index+1}/{len(self.all_images)} in {self.dataset_combo.currentText()}")
         self.log_box.append(f"Original path:   {path_orig if path_orig else 'Not found'}")
         self.log_box.append(f"Cleaned path:    {path_clean if path_clean else 'Not found'}")
-        self.log_box.append(f"Augmented path:  {path_aug if path_aug else 'Not found'}")
+        if aug_paths:
+            self.log_box.append(f"Found {len(aug_paths)} augmented variant(s).")
+            for i, ap in enumerate(aug_paths):
+                self.log_box.append(f"   Aug{i+1}: {ap}")
+        else:
+            self.log_box.append("No augmented variants found for this file.")
 
     def _locate_image(self, root_dir, base_name):
+        """
+        Return the full path for base_name if found in root_dir (recursively).
+        """
+        if not os.path.isdir(root_dir):
+            return None
         for subdir, dirs, files in os.walk(root_dir):
             if base_name in files:
                 return os.path.join(subdir, base_name)
         return None
 
-    def _plot_image(self, ax, path, title):
-        if path and os.path.isfile(path):
-            pil_img = load_image_as_grayscale(path)
-            if pil_img:
-                ax.imshow(pil_img, cmap='gray')
-            else:
-                ax.text(0.5, 0.5, "Error reading", ha='center', va='center')
-        else:
-            ax.text(0.5, 0.5, "Not found", ha='center', va='center')
-        ax.set_title(title)
-        ax.axis('off')
+    def _locate_all_aug_images(self, root_dir, base_name):
+        """
+        Return a list of all augmented images (e.g. baseName_aug0.jpg),
+        searching inside `root_dir`.
+        We'll guess the 'stem' is base_name minus extension,
+        then anything that starts with that + "_aug" + same ext.
+        """
+        if not os.path.isdir(root_dir):
+            return []
+        stem, ext = os.path.splitext(base_name)
+        matches = []
+        for subdir, dirs, files in os.walk(root_dir):
+            for f in files:
+                # check if it starts with <stem>_aug and ends with same extension
+                if f.lower().startswith(stem.lower() + "_aug") and f.lower().endswith(ext.lower()):
+                    matches.append(os.path.join(subdir, f))
+        matches.sort()
+        return matches
