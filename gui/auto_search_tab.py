@@ -28,20 +28,35 @@ _HPC_RESULTS_JSON = "hpc_results.json"
 
 def save_hpc_results_json(all_results, path=_HPC_RESULTS_JSON):
     """
-    Save HPC combos (including confmat/ROC) to a JSON file so they persist across sessions.
+    Save HPC combos (including confmat/ROC/metrics) to a JSON file so they persist across sessions.
+    Each item is structured similarly to:
+      {
+        "combo_str": "...",
+        "val_acc":  88.7,
+        "model_path": "hpc_checkpoints/hpc_model_combo_1.pth",
+        "model_variant": "binary",
+        "confmat_list": [[12, 1],[2, 14]],
+        "roc": {"fpr": [...], "tpr": [...], "auc": 0.94},
+        "metrics": {...}
+      }
     """
     data_to_save = []
     for rec in all_results:
+        # Convert confusion matrix to list-of-lists for JSON
+        cmat = rec.get("confmat", None)
+        if cmat is not None:
+            cmat_list = cmat.cpu().tolist()
+        else:
+            cmat_list = None
+
         data_to_save.append({
-            "combo_str":    rec["combo_str"],
-            "val_acc":      rec["val_acc"],
-            "model_path":   rec["model_path"],
-            "model_variant":rec.get("model_variant", ""),
-            # Store confmat, roc, and metrics if desired.
-            # We'll store them in a simpler form (lists) so JSON can handle them.
-            "confmat":      rec.get("confmat_list", None),
-            "roc":          rec.get("roc", None),
-            "metrics":      rec.get("metrics", None)
+            "combo_str":     rec["combo_str"],
+            "val_acc":       rec["val_acc"],
+            "model_path":    rec["model_path"],
+            "model_variant": rec.get("model_variant", ""),
+            "confmat_list":  cmat_list,
+            "roc":           rec.get("roc", None),
+            "metrics":       rec.get("metrics", None)
         })
     try:
         with open(path, "w") as f:
@@ -49,39 +64,45 @@ def save_hpc_results_json(all_results, path=_HPC_RESULTS_JSON):
     except Exception as e:
         print(f"[WARN] Could not save HPC results to {path}: {e}")
 
+
 def load_hpc_results_json(path=_HPC_RESULTS_JSON):
     """
-    Load HPC combos from a JSON file. Each item has:
-       { "combo_str","val_acc","model_path","model_variant","confmat","roc","metrics",... }
-    We'll convert confmat back to a torch.Tensor if it exists.
+    Load HPC combos from JSON. We convert confmat_list back to a torch Tensor if present.
+    Data structure returned is:
+      [
+        {
+          "combo_str": "...",
+          "val_acc": ...,
+          "model_path": "...",
+          "model_variant": "...",
+          "confmat": <torch.IntTensor or None>,
+          "roc": {...},
+          "metrics": {...}
+        }, ...
+      ]
     """
     if not os.path.isfile(path):
         return []
     try:
         with open(path, "r") as f:
             data = json.load(f)
-        # Convert back to the structure we use in memory
         results = []
         for item in data:
-            rec = {
-                "combo_str": item["combo_str"],
-                "val_acc":   item["val_acc"],
-                "model_path":item["model_path"],
-                "model_variant": item.get("model_variant",""),
-                "metrics":   item.get("metrics",None),
-                "roc":       item.get("roc",None)
-            }
-            # For confmat, convert stored list-of-lists to torch.IntTensor if present
-            cmat_list = item.get("confmat", None)
+            cmat_list = item.get("confmat_list", None)
             if cmat_list is not None:
                 import torch
-                import numpy as np
-                cmat_arr = torch.tensor(cmat_list, dtype=torch.int32)
-                rec["confmat"] = cmat_arr
+                cmat_tensor = torch.tensor(cmat_list, dtype=torch.int32)
             else:
-                rec["confmat"] = None
-
-            results.append(rec)
+                cmat_tensor = None
+            results.append({
+                "combo_str":     item["combo_str"],
+                "val_acc":       item["val_acc"],
+                "model_path":    item["model_path"],
+                "model_variant": item.get("model_variant", ""),
+                "confmat":       cmat_tensor,
+                "roc":           item.get("roc", None),
+                "metrics":       item.get("metrics", None)
+            })
         return results
     except Exception as e:
         print(f"[WARN] Could not load HPC results from {path}: {e}")
@@ -92,8 +113,8 @@ def load_hpc_results_json(path=_HPC_RESULTS_JSON):
 ########################################################################
 class HPCSearchWorker(QThread):
     """
-    Conduct HPC with partial training for each combo,
-    storing best val_acc, best model state, best confmat/ROC/metrics, etc.
+    Conduct HPC with partial training for each combo.
+    We store best val_acc, confmat, ROC, metrics, plus the saved model path.
     """
     progress = pyqtSignal(int)
     log_msg = pyqtSignal(str)
@@ -444,9 +465,12 @@ class FinalTrainWorker(QThread):
 ########################################################################
 class AutoSearchTab(QWidget):
     """
-    HPC search that does partial training with confmat/ROC/metrics storage,
+    HPC search that does partial training with confmat/ROC/metrics,
     also final training of best HPC combo, storing confusion matrix & ROC,
     and persisting HPC combos to JSON so they can be reloaded at app start.
+
+    Now includes a second bar chart for ROC AUC (0 if not available).
+    Also sets bigger minimum sizes for the bottom charts.
     """
 
     def __init__(self, parent=None):
@@ -567,8 +591,8 @@ class AutoSearchTab(QWidget):
         cont_layout.addWidget(self.hpc_log)
 
         # HPC chart for the current combo
-        self.hpc_canvas = MplCanvas(self, width=8, height=5, dpi=100)
-        self.hpc_canvas.setMinimumSize(800, 400)  # or bigger
+        self.hpc_canvas = MplCanvas(self, width=8, height=4, dpi=100)
+        self.hpc_canvas.setMinimumSize(800, 400)
         self.hpc_toolbar = NavigationToolbar(self.hpc_canvas, self)
         cont_layout.addWidget(QLabel("<b>Current HPC Combo: Train vs. Val Accuracy</b>"))
         cont_layout.addWidget(self.hpc_canvas)
@@ -599,12 +623,21 @@ class AutoSearchTab(QWidget):
         self.hpc_info_text.setMinimumHeight(180)
         rg_layout.addWidget(self.hpc_info_text)
 
+        # HPC combos Bar Chart
         self.hpc_bar_canvas = MplCanvas(self, width=8, height=3, dpi=100)
         self.hpc_bar_canvas.setMinimumSize(800, 400)
         self.hpc_bar_toolbar = NavigationToolbar(self.hpc_bar_canvas, self)
-        rg_layout.addWidget(QLabel("<b>HPC Combos Bar Chart</b>"))
+        rg_layout.addWidget(QLabel("<b>HPC Combos: Validation Accuracy</b>"))
         rg_layout.addWidget(self.hpc_bar_canvas)
         rg_layout.addWidget(self.hpc_bar_toolbar)
+
+        # HPC AUC Bar Chart
+        self.hpc_auc_canvas = MplCanvas(self, width=8, height=3, dpi=100)
+        self.hpc_auc_canvas.setMinimumSize(800, 400)
+        self.hpc_auc_toolbar = NavigationToolbar(self.hpc_auc_canvas, self)
+        rg_layout.addWidget(QLabel("<b>HPC Combos: ROC AUC (Binary/Double Only)</b>"))
+        rg_layout.addWidget(self.hpc_auc_canvas)
+        rg_layout.addWidget(self.hpc_auc_toolbar)
 
         cont_layout.addWidget(results_group)
 
@@ -649,8 +682,7 @@ class AutoSearchTab(QWidget):
 
         # final chart
         self.final_canvas = MplCanvas(self, width=8, height=4)
-        self.hpc_bar_canvas.setMinimumSize(800, 400)
-
+        self.final_canvas.setMinimumSize(800, 400)
         self.final_toolbar = NavigationToolbar(self.final_canvas, self)
         cont_layout.addWidget(QLabel("<b>Final Training: Train vs. Val Accuracy</b>"))
         cont_layout.addWidget(self.final_canvas)
@@ -662,8 +694,7 @@ class AutoSearchTab(QWidget):
 
         # confmat
         self.confmat_canvas = MplCanvas(self, width=4, height=3)
-        self.hpc_bar_canvas.setMinimumSize(800, 400)
-
+        self.confmat_canvas.setMinimumSize(400, 300)
         self.confmat_toolbar = NavigationToolbar(self.confmat_canvas, self)
         v_left = QVBoxLayout()
         v_left.addWidget(QLabel("<b>Confusion Matrix</b>"))
@@ -673,7 +704,7 @@ class AutoSearchTab(QWidget):
 
         # roc
         self.roc_canvas = MplCanvas(self, width=4, height=3)
-        self.hpc_bar_canvas.setMinimumSize(800, 400)
+        self.roc_canvas.setMinimumSize(800,400)
         self.roc_toolbar = NavigationToolbar(self.roc_canvas, self)
         v_right = QVBoxLayout()
         v_right.addWidget(QLabel("<b>ROC Curve (Binary/Double)</b>"))
@@ -712,31 +743,30 @@ class AutoSearchTab(QWidget):
         # Load any existing HPC combos from JSON
         self._load_existing_hpc_results()
 
-
     ########################################################################
     ## LOAD/SAVE HPC combos from JSON
     ########################################################################
     def _load_existing_hpc_results(self):
         loaded = load_hpc_results_json()
         if loaded:
-            # Convert them into the same structure we use internally
             self.all_results = []
             for item in loaded:
                 rec = {
-                    "combo_str": item["combo_str"],
-                    "val_acc":   item["val_acc"],
-                    "model_path":item["model_path"],
-                    "model_variant": item.get("model_variant",""),
-                    "metrics":   item.get("metrics", None),
-                    "roc":       item.get("roc", None),
-                    "confmat":   item.get("confmat", None)
+                    "combo_str":     item["combo_str"],
+                    "val_acc":       item["val_acc"],
+                    "model_path":    item["model_path"],
+                    "model_variant": item["model_variant"],
+                    "metrics":       item.get("metrics", None),
+                    "roc":           item.get("roc", None),
+                    "confmat":       item.get("confmat", None)
                 }
                 self.all_results.append(rec)
-            # Rebuild table & chart
+
             self._update_hpc_table()
             self._plot_hpc_combo_chart()
+            self._plot_hpc_auc_chart()
 
-            # Figure out which is best
+            # find best
             if self.all_results:
                 best = max(self.all_results, key=lambda r: r["val_acc"])
                 self.best_params_str = best["combo_str"]
@@ -766,6 +796,7 @@ class AutoSearchTab(QWidget):
         self.hpc_train_acc.clear()
         self.hpc_val_acc.clear()
         self._plot_hpc_combo_chart()
+        self._plot_hpc_auc_chart()
 
         root_dir = self.dataset_combo.currentText().strip()
         if not os.path.isdir(root_dir):
@@ -872,7 +903,7 @@ class AutoSearchTab(QWidget):
     def _plot_hpc_training_chart(self):
         self.hpc_canvas.figure.clear()
         ax = self.hpc_canvas.figure.add_subplot(111)
-        ax.set_title("HPC Combo Training (partial run)")
+        ax.set_title("HPC Combo Training (Partial Run)")
         ax.set_xlabel("Epoch")
         ax.set_ylabel("Accuracy (%)")
         ax.grid(True)
@@ -899,6 +930,7 @@ class AutoSearchTab(QWidget):
 
             self._update_hpc_table()
             self._plot_hpc_combo_chart()
+            self._plot_hpc_auc_chart()
 
             self._save_current_hpc_results()
 
@@ -923,6 +955,9 @@ class AutoSearchTab(QWidget):
             self.hpc_table.setItem(i, 3, model_item)
 
     def _plot_hpc_combo_chart(self):
+        """
+        Bar chart of val_acc for each HPC combo
+        """
         self.hpc_bar_canvas.figure.clear()
         ax = self.hpc_bar_canvas.figure.add_subplot(111)
         if not self.all_results:
@@ -943,6 +978,39 @@ class AutoSearchTab(QWidget):
 
         self.hpc_bar_canvas.figure.tight_layout()
         self.hpc_bar_canvas.draw()
+
+    def _plot_hpc_auc_chart(self):
+        """
+        Bar chart of ROC AUC for each HPC combo if available; otherwise 0.
+        For multi-class combos, no ROC is stored => 0.
+        """
+        self.hpc_auc_canvas.figure.clear()
+        ax = self.hpc_auc_canvas.figure.add_subplot(111)
+        if not self.all_results:
+            ax.text(0.5, 0.5, "No HPC results yet", ha='center', va='center')
+        else:
+            auc_vals = []
+            for rec in self.all_results:
+                roc_obj = rec.get("roc", None)
+                if roc_obj and roc_obj.get("auc", None) is not None:
+                    auc_vals.append(float(roc_obj["auc"]))
+                else:
+                    auc_vals.append(0.0)
+
+            xvals = range(len(auc_vals))
+            best_idx = max(range(len(auc_vals)), key=lambda i: auc_vals[i])
+            colors = ["purple"] * len(auc_vals)
+            colors[best_idx] = "orange"
+            ax.bar(xvals, auc_vals, color=colors)
+            ax.set_title("HPC Combos ROC AUC (Binary/Double Only)")
+            ax.set_xlabel("Combo Index")
+            ax.set_ylabel("AUC")
+            ax.set_xticks(xvals)
+            ax.set_xticklabels([str(i+1) for i in xvals])
+            ax.grid(axis='y', alpha=0.3)
+
+        self.hpc_auc_canvas.figure.tight_layout()
+        self.hpc_auc_canvas.draw()
 
     ########################################################################
     ## HPC Info Card
