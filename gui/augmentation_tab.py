@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QGroupBox, QFormLayout, QHBoxLayout,
     QPushButton, QCheckBox, QSlider, QFileDialog, QMessageBox, QSpinBox,
     QTextEdit, QProgressBar, QTabWidget, QGridLayout, QSpacerItem, QSizePolicy,
-    QScrollArea
+    QScrollArea, QLineEdit
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
@@ -31,7 +31,9 @@ def count_distribution(root_dir):
       }
     """
     dist = {}
-    for subset in ["Training", "Testing"]:
+    if not os.path.isdir(root_dir):
+        return dist
+    for subset in os.listdir(root_dir):
         subset_path = os.path.join(root_dir, subset)
         if os.path.isdir(subset_path):
             classes = [
@@ -57,6 +59,8 @@ class AugmentationWorker(QThread):
 
     def __init__(
         self,
+        src_root,            # <--- add source root
+        dst_root,            # <--- add destination root
         final_target=2000,
         rotate_deg=15,
         do_rotate=True,
@@ -74,6 +78,8 @@ class AugmentationWorker(QThread):
         parent=None
     ):
         super().__init__(parent)
+        self.src_root = src_root
+        self.dst_root = dst_root
         self.final_target = final_target
         self.rotate_deg = rotate_deg
         self.do_rotate = do_rotate
@@ -95,8 +101,8 @@ class AugmentationWorker(QThread):
 
         try:
             total_new_images, error_log = bulk_augment_dataset(
-                src_root="cleaned_data",
-                dst_root="augmented_data",
+                src_root=self.src_root,
+                dst_root=self.dst_root,
                 final_target=self.final_target,
                 rotate_deg=self.rotate_deg,
                 do_rotate=self.do_rotate,
@@ -317,6 +323,24 @@ class AugmentationTab(QWidget):
         bulk_box = QGroupBox("Bulk Augmentation Configuration")
         bform = QFormLayout()
 
+        # ** NEW: source dataset folder + browse
+        self.src_folder_edit = QLineEdit("cleaned_data")
+        self.btn_src_browse = QPushButton("Browse...")
+        self.btn_src_browse.clicked.connect(self.on_browse_src)
+        h_src = QHBoxLayout()
+        h_src.addWidget(self.src_folder_edit)
+        h_src.addWidget(self.btn_src_browse)
+        bform.addRow("Source Folder:", h_src)
+
+        # ** NEW: destination folder + browse
+        self.dst_folder_edit = QLineEdit("augmented_data")
+        self.btn_dst_browse = QPushButton("Browse...")
+        self.btn_dst_browse.clicked.connect(self.on_browse_dst)
+        h_dst = QHBoxLayout()
+        h_dst.addWidget(self.dst_folder_edit)
+        h_dst.addWidget(self.btn_dst_browse)
+        bform.addRow("Destination Folder:", h_dst)
+
         # final target spin
         self.target_spin = QSpinBox()
         self.target_spin.setRange(1, 99999)
@@ -398,8 +422,7 @@ class AugmentationTab(QWidget):
         dist_box = QGroupBox("Distribution Dashboard")
         dist_layout = QVBoxLayout(dist_box)
         info_label = QLabel(
-            "Shows how class counts changed from cleaned_data to augmented_data "
-            "(each class is brought up to at least final_target)."
+            "Shows how class counts changed from the chosen source folder to the chosen destination folder."
         )
         info_label.setWordWrap(True)
         dist_layout.addWidget(info_label)
@@ -417,9 +440,34 @@ class AugmentationTab(QWidget):
 
         return bulk_widget
 
+    # ** NEW: browse for source folder
+    def on_browse_src(self):
+        dlg = QFileDialog(self)
+        dlg.setFileMode(QFileDialog.Directory)
+        if dlg.exec_():
+            self.src_folder_edit.setText(dlg.selectedFiles()[0])
+
+    # ** NEW: browse for destination folder
+    def on_browse_dst(self):
+        dlg = QFileDialog(self)
+        dlg.setFileMode(QFileDialog.Directory)
+        if dlg.exec_():
+            self.dst_folder_edit.setText(dlg.selectedFiles()[0])
+
     def on_bulk_augment(self):
         self.aug_log.clear()
         self.aug_progress.setValue(0)
+
+        src_folder = self.src_folder_edit.text().strip()
+        dst_folder = self.dst_folder_edit.text().strip()
+
+        if not os.path.isdir(src_folder):
+            QMessageBox.warning(self, "Invalid Source", f"'{src_folder}' is not a valid directory.")
+            return
+
+        if not dst_folder:
+            QMessageBox.warning(self, "Invalid Destination", "Please specify a valid destination folder.")
+            return
 
         final_target = self.target_spin.value()
         rotate_deg = self.bulk_rotate_slider.value() if self.bulk_rotate_chk.isChecked() else 0
@@ -438,6 +486,8 @@ class AugmentationTab(QWidget):
         g_max = self.bulk_g_max.value()
 
         self.worker = AugmentationWorker(
+            src_root=src_folder,       # pass user choice
+            dst_root=dst_folder,       # pass user choice
             final_target=final_target,
             rotate_deg=rotate_deg,
             do_rotate=do_rotate,
@@ -471,15 +521,17 @@ class AugmentationTab(QWidget):
                 self.aug_log.append(e)
 
     def on_show_distribution(self):
-        cleaned_dist = count_distribution("cleaned_data")
-        aug_dist = count_distribution("augmented_data")
+        # We'll compare the distribution from the chosen src folder to the chosen dst folder
+        src_folder = self.src_folder_edit.text().strip()
+        dst_folder = self.dst_folder_edit.text().strip()
 
-        train_cleaned_dist = {k: v for k, v in cleaned_dist.items() if k.startswith("Training/")}
-        train_aug_dist = {k: v for k, v in aug_dist.items() if k.startswith("Training/")}
+        cleaned_dist = count_distribution(src_folder)
+        aug_dist = count_distribution(dst_folder)
 
-        all_keys = sorted(set(train_cleaned_dist.keys()).union(train_aug_dist.keys()))
-        cleaned_vals = [train_cleaned_dist.get(k, 0) for k in all_keys]
-        aug_vals = [train_aug_dist.get(k, 0) for k in all_keys]
+        # For a simpler example, let's just compare all subsets that appear
+        all_keys = sorted(set(cleaned_dist.keys()).union(aug_dist.keys()))
+        cleaned_vals = [cleaned_dist.get(k, 0) for k in all_keys]
+        aug_vals = [aug_dist.get(k, 0) for k in all_keys]
 
         self.dist_canvas.figure.clear()
         ax = self.dist_canvas.figure.subplots()
@@ -487,8 +539,8 @@ class AugmentationTab(QWidget):
         x_positions = np.arange(len(all_keys))
         width = 0.35
 
-        bars_cleaned = ax.bar(x_positions - width/2, cleaned_vals, width, label="Cleaned")
-        bars_aug = ax.bar(x_positions + width/2, aug_vals, width, label="Augmented")
+        bars_cleaned = ax.bar(x_positions - width/2, cleaned_vals, width, label="Source")
+        bars_aug = ax.bar(x_positions + width/2, aug_vals, width, label="Destination")
 
         for bar in bars_cleaned:
             height = bar.get_height()
@@ -507,7 +559,7 @@ class AugmentationTab(QWidget):
             )
 
         ax.set_ylabel("Image Count")
-        ax.set_title("Training Set Only: Cleaned vs. Augmented")
+        ax.set_title("Source vs. Destination Distribution")
         ax.set_xticks(x_positions)
         ax.set_xticklabels(all_keys, rotation=45, ha='right')
         ax.legend()
@@ -515,11 +567,11 @@ class AugmentationTab(QWidget):
         self.dist_canvas.figure.tight_layout()
         self.dist_canvas.draw()
 
-        self.aug_log.append("<b>Training set distribution comparison (cleaned vs. augmented):</b>")
+        self.aug_log.append("<b>Distribution comparison (source vs. destination):</b>")
         for k in all_keys:
-            c_val = train_cleaned_dist.get(k, 0)
-            a_val = train_aug_dist.get(k, 0)
-            self.aug_log.append(f"{k}: cleaned={c_val}  augmented={a_val}")
+            c_val = cleaned_dist.get(k, 0)
+            a_val = aug_dist.get(k, 0)
+            self.aug_log.append(f"{k}: source={c_val}  destination={a_val}")
 
 
 # Helper widget for double spin boxes

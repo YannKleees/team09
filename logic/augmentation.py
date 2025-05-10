@@ -1,5 +1,3 @@
-# File: logic/augmentation.py
-
 import os
 import math
 import random
@@ -77,9 +75,9 @@ def preview_augmentation(
 
 
 def bulk_augment_dataset(
-    src_root="cleaned_data",
-    dst_root="augmented_data",
-    final_target=2000,
+    src_root: str,
+    dst_root: str,
+    final_target: int,
     rotate_deg=15,
     do_rotate=True,
     do_brightness_contrast=True,
@@ -94,45 +92,36 @@ def bulk_augment_dataset(
 ):
     """
     Creates an augmented dataset in `dst_root`, ensuring for each
-    class (Training & Testing) we have at least `final_target` images.
+    class (under the "Training" or other subsets) we have at least `final_target` images.
 
     Steps:
       1) Copy all original images from src_root -> dst_root.
       2) Count how many each class has. If already >= final_target, skip augmentation.
-      3) If < final_target, do a round-robin approach:
-         - Start from the first source image, augment & save
-         - Move to next source image, augment & save
-         - If you reach the last source image but still need more, loop back
-           to the first image again
-      4) Stop once you have exactly `final_target`.
-
-    The final distribution is all original + the new augmented images.
+      3) If < final_target, do a round-robin approach using the source images.
+      4) Stop once you have exactly `final_target` for that class.
     """
-
     if not os.path.isdir(src_root):
         raise ValueError(f"Source folder '{src_root}' does not exist.")
 
     error_log = []
     total_new_images = 0
 
-    # Step A) Gather subsets we will process:
+    # Gather all subfolders (commonly "Training", "Testing", etc.)
     subsets = []
-    for s in ["Training"]:
-        s_path = os.path.join(src_root, s)
+    for name in os.listdir(src_root):
+        s_path = os.path.join(src_root, name)
         if os.path.isdir(s_path):
-            subsets.append(s)
+            subsets.append(name)
 
-    # Step B) Build a list of all classes & how many images are in each
-    #         so we know total operations (copy + needed augment).
-    # We'll do a dictionary: key -> (list_of_src_images, base_count, needed)
-    class_info = {}  # { "Training/ClassA": {...}, ... }
+    # Prepare lists for each subset & class
+    class_info = {}
     total_ops = 0
 
+    # Create the same subsets in dst_root
     for subset in subsets:
         src_subset = os.path.join(src_root, subset)
         dst_subset = os.path.join(dst_root, subset)
-        if not os.path.isdir(dst_subset):
-            os.makedirs(dst_subset, exist_ok=True)
+        os.makedirs(dst_subset, exist_ok=True)
 
         classes = [
             d for d in os.listdir(src_subset)
@@ -160,16 +149,15 @@ def bulk_augment_dataset(
                 "base_count": base_count,
                 "needed": needed
             }
-            total_ops += base_count  # copy each original
-            total_ops += needed      # plus needed new images
+            total_ops += base_count  # each original is one copy op
+            total_ops += needed      # plus the needed new images
 
     if total_ops == 0:
-        # Means no images found or no subsets found
         if progress_callback:
-            progress_callback(100, "No images to process.")
+            progress_callback(100, "No images found or no classes in source.")
         return 0, []
 
-    # Step C) Start copying + augmenting
+    # (i) Copy all originals
     done_ops = 0
 
     def update_progress(msg):
@@ -179,7 +167,6 @@ def bulk_augment_dataset(
         if progress_callback:
             progress_callback(pct, msg)
 
-    # (i) Copy all originals
     for class_key, info in class_info.items():
         subset_name, cls_name = class_key.split("/", 1)
         src_subset = os.path.join(src_root, subset_name, cls_name)
@@ -196,7 +183,6 @@ def bulk_augment_dataset(
                 error_log.append(err_msg)
 
     # (ii) Now do round-robin augmentation where needed
-    # Build the augment function once
     def build_augment_func():
         def augment_func(pil_img: Image.Image):
             temp = pil_img
@@ -216,8 +202,6 @@ def bulk_augment_dataset(
                 temp = persp(temp)
 
             if do_crop:
-                # We keep the original size, so let's do random crop
-                # Then resize back to original?
                 w, h = temp.size
                 cropper = T.RandomResizedCrop(size=(h, w), scale=(0.8, 1.0))
                 temp = cropper(temp)
@@ -252,11 +236,10 @@ def bulk_augment_dataset(
         base_count = info["base_count"]
         src_images = info["src_images"]
 
-        # Round-robin approach
         idx = 0
         for i in range(needed):
             src_name = src_images[idx]
-            idx = (idx + 1) % base_count  # loop around
+            idx = (idx + 1) % base_count  # loop around if needed
             src_path = os.path.join(src_subset, src_name)
             try:
                 with Image.open(src_path).convert('L') as pil_img:
@@ -271,7 +254,6 @@ def bulk_augment_dataset(
                 err_msg = f"[AugError] {src_path} => {str(e)}"
                 error_log.append(err_msg)
 
-    # Done
     if progress_callback:
-        progress_callback(100, "Augmentation completed.")
+        progress_callback(100, "Augmentation done.")
     return total_new_images, error_log

@@ -568,7 +568,7 @@ class AutoSearchTab(QWidget):
 
         # HPC chart for the current combo
         self.hpc_canvas = MplCanvas(self, width=8, height=5, dpi=100)
-        self.hpc_canvas.setMinimumHeight(350)
+        self.hpc_canvas.setMinimumSize(800, 400)  # or bigger
         self.hpc_toolbar = NavigationToolbar(self.hpc_canvas, self)
         cont_layout.addWidget(QLabel("<b>Current HPC Combo: Train vs. Val Accuracy</b>"))
         cont_layout.addWidget(self.hpc_canvas)
@@ -600,6 +600,7 @@ class AutoSearchTab(QWidget):
         rg_layout.addWidget(self.hpc_info_text)
 
         self.hpc_bar_canvas = MplCanvas(self, width=8, height=3, dpi=100)
+        self.hpc_bar_canvas.setMinimumSize(800, 400)
         self.hpc_bar_toolbar = NavigationToolbar(self.hpc_bar_canvas, self)
         rg_layout.addWidget(QLabel("<b>HPC Combos Bar Chart</b>"))
         rg_layout.addWidget(self.hpc_bar_canvas)
@@ -648,6 +649,8 @@ class AutoSearchTab(QWidget):
 
         # final chart
         self.final_canvas = MplCanvas(self, width=8, height=4)
+        self.hpc_bar_canvas.setMinimumSize(800, 400)
+
         self.final_toolbar = NavigationToolbar(self.final_canvas, self)
         cont_layout.addWidget(QLabel("<b>Final Training: Train vs. Val Accuracy</b>"))
         cont_layout.addWidget(self.final_canvas)
@@ -659,6 +662,8 @@ class AutoSearchTab(QWidget):
 
         # confmat
         self.confmat_canvas = MplCanvas(self, width=4, height=3)
+        self.hpc_bar_canvas.setMinimumSize(800, 400)
+
         self.confmat_toolbar = NavigationToolbar(self.confmat_canvas, self)
         v_left = QVBoxLayout()
         v_left.addWidget(QLabel("<b>Confusion Matrix</b>"))
@@ -668,6 +673,7 @@ class AutoSearchTab(QWidget):
 
         # roc
         self.roc_canvas = MplCanvas(self, width=4, height=3)
+        self.hpc_bar_canvas.setMinimumSize(800, 400)
         self.roc_toolbar = NavigationToolbar(self.roc_canvas, self)
         v_right = QVBoxLayout()
         v_right.addWidget(QLabel("<b>ROC Curve (Binary/Double)</b>"))
