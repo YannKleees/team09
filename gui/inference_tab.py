@@ -1,11 +1,13 @@
 """
 inference_tab.py
 
-Upgraded InferenceTab:
+Upgraded InferenceTab with:
  - Collapsible HPC info (ConfMat, ROC, metrics)
  - Single vs. Batch inference with HPC combos
- - Grad-CAM (pytorch-grad-cam)
+ - Single Grad-CAM (unchanged logic, minor refactoring)
+ - NEW: Batch Grad-CAM box
  - Class label fix for "simple" (4-class) => [0=NoTumor,1=Pituitary,2=Meningioma,3=Glioma]
+ - HPC references kept for combos (no mention of disable_aug or adv_aug).
 """
 
 import os
@@ -21,7 +23,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QComboBox, QLineEdit, QPushButton, QHBoxLayout,
     QFileDialog, QTextEdit, QMessageBox, QGroupBox, QFormLayout, QProgressBar,
     QTableWidget, QTableWidgetItem, QHeaderView, QScrollArea, QRadioButton,
-    QCheckBox
+    QCheckBox, QDialog, QGridLayout, QSlider
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5 import QtGui
@@ -30,12 +32,19 @@ from PyQt5 import QtGui
 from gui.widgets import MplCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 
-# Grad-CAM imports
+### Attempt to import multiple Grad-CAM variants
 try:
-    from pytorch_grad_cam import GradCAM
+    from pytorch_grad_cam import GradCAM, ScoreCAM, XGradCAM, EigenCAM
+    from pytorch_grad_cam import GradCAMPlusPlus as GradCAMPP
     from pytorch_grad_cam.utils.image import show_cam_on_image
 except ImportError:
+    # If not installed, set them to None. We'll fallback to normal GradCAM if possible
     GradCAM = None
+    ScoreCAM = None
+    XGradCAM = None
+    EigenCAM = None
+    GradCAMPP = None
+    show_cam_on_image = None
 
 import numpy as np
 
@@ -74,6 +83,9 @@ def load_hpc_results_json(path=_HPC_RESULTS_JSON):
 
 
 class BatchInferenceWorker(QThread):
+    """
+    Threaded batch inference worker.
+    """
     progress_msg = pyqtSignal(str)
     finished_batch = pyqtSignal(list)
 
@@ -99,6 +111,46 @@ class BatchInferenceWorker(QThread):
             self.finished_batch.emit([])
 
 
+### NEW BATCH-GRAD-CAM DIALOG ###
+class GradCamDialog(QDialog):
+    """
+    A simple dialog that shows multiple Grad-CAM results in a grid layout.
+    Each selected row from the results table => 1 image.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Batch Grad-CAM Results")
+        self.resize(900, 600)
+
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setWidgetResizable(True)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.scroll_area)
+        self.setLayout(layout)
+
+        self.container = QWidget()
+        self.container_layout = QGridLayout(self.container)
+        self.container_layout.setSpacing(6)
+
+        self.scroll_area.setWidget(self.container)
+
+    def add_gradcam_image(self, pixmap, title="", row=0, col=0):
+        """
+        Adds a labeled image in the grid.
+        """
+        lbl_title = QLabel(title)
+        lbl_title.setAlignment(Qt.AlignCenter)
+
+        lbl_img = QLabel()
+        lbl_img.setPixmap(pixmap)
+        lbl_img.setAlignment(Qt.AlignCenter)
+
+        self.container_layout.addWidget(lbl_title, row*2, col)
+        self.container_layout.addWidget(lbl_img, row*2+1, col)
+
+
+### MAIN INFERENCE TAB ###
 class InferenceTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -295,6 +347,44 @@ class InferenceTab(QWidget):
         ])
         self.results_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         container_layout.addWidget(self.results_table)
+
+        ### NEW BATCH-GRAD-CAM WIDGETS ###
+        self.batch_gradcam_box = QGroupBox("Batch Grad-CAM")
+        bg_layout = QFormLayout(self.batch_gradcam_box)
+
+        # Method combo
+        self.combo_gradcam_method = QComboBox()
+        # We'll show these in a user-friendly order. Only activate them if they exist.
+        # We'll do a quick check for each import:
+        method_list = []
+        if GradCAM is not None:
+            method_list.append("GradCAM")
+        if GradCAMPP is not None:
+            method_list.append("GradCAM++")
+        if ScoreCAM is not None:
+            method_list.append("ScoreCAM")
+        if XGradCAM is not None:
+            method_list.append("XGradCAM")
+        if EigenCAM is not None:
+            method_list.append("EigenCAM")
+        if not method_list:
+            # fallback => no variants installed
+            method_list = ["(No Grad-CAM variants installed)"]
+        self.combo_gradcam_method.addItems(method_list)
+        bg_layout.addRow("Method:", self.combo_gradcam_method)
+
+        # Opacity slider
+        self.slider_alpha = QSlider(Qt.Horizontal)
+        self.slider_alpha.setRange(0, 100)
+        self.slider_alpha.setValue(50)  # 50% overlay
+        bg_layout.addRow("Overlay Opacity:", self.slider_alpha)
+
+        # Button
+        self.btn_batch_gradcam = QPushButton("Run Batch Grad-CAM (Selected Rows)")
+        self.btn_batch_gradcam.clicked.connect(self.on_batch_gradcam)
+        bg_layout.addRow(self.btn_batch_gradcam)
+
+        container_layout.addWidget(self.batch_gradcam_box)
 
         scroll_area.setWidget(container)
         main_layout.addWidget(scroll_area)
@@ -495,11 +585,11 @@ class InferenceTab(QWidget):
             QMessageBox.critical(self, "Inference Error", str(e))
 
     # ----------------------------------------------------------------
-    # Grad-CAM
+    # Single Grad-CAM
     # ----------------------------------------------------------------
     def on_grad_cam_analysis(self):
-        if GradCAM is None:
-            QMessageBox.warning(self, "Missing grad-cam", "pytorch-grad-cam is not installed.")
+        if GradCAM is None or show_cam_on_image is None:
+            QMessageBox.warning(self, "Missing grad-cam", "pytorch-grad-cam is not installed or incomplete.")
             return
 
         if not self.current_inference_model or not hasattr(self.current_inference_model, 'model'):
@@ -512,50 +602,23 @@ class InferenceTab(QWidget):
             return
 
         try:
-            # 1) model & input
-            pytorch_model_instance = self.current_inference_model.model
-            pytorch_model_instance.eval()
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            pytorch_model_instance.to(device)
-
-            # 2) open as grayscale => single channel
-            pil_img = Image.open(img_path).convert('L')
-
-            # 3) transform => shape [1,1,H,W]
-            model_transform = self.current_inference_model.transform
-            input_tensor = model_transform(pil_img).unsqueeze(0).to(device)
-
-            # 4) final conv
-            final_conv = None
-            for name, module in pytorch_model_instance.named_modules():
-                if isinstance(module, torch.nn.Conv2d):
-                    final_conv = module
-            if not final_conv:
-                QMessageBox.warning(self, "Grad-CAM Error", "No Conv2d layer found in model.")
+            # We'll just pick standard GradCAM for single analysis
+            # (unchanged logic from original)
+            cam = self._build_gradcam_variant(
+                method_name="GradCAM",
+                fallback_ok=True
+            )
+            if cam is None:
+                QMessageBox.warning(self, "No GradCAM", "No Grad-CAM variant is installed.")
                 return
 
-            # 5) create GradCAM
-            cam = GradCAM(model=pytorch_model_instance, target_layers=[final_conv])
+            # generate
+            visualization = self._run_gradcam_on_path(img_path, cam)
+            if visualization is None:
+                return
 
-            # 6) run => get mask (128x128 if input_size=128)
-            grayscale_cam = cam(input_tensor=input_tensor, targets=None)
-            grayscale_cam = grayscale_cam[0, :]
-
-            # 7) convert original PIL -> 3ch array
-            gray_arr = np.array(pil_img, dtype=np.float32) / 255.0
-            rgb_img_np = np.stack([gray_arr]*3, axis=-1)  # (H,W,3)
-
-            # resize the cam mask if needed
-            h, w, _ = rgb_img_np.shape
-            import cv2
-            grayscale_cam_resized = cv2.resize(grayscale_cam, (w, h), interpolation=cv2.INTER_LINEAR)
-
-            # 8) overlay
-            from pytorch_grad_cam.utils.image import show_cam_on_image
-            visualization = show_cam_on_image(rgb_img_np, grayscale_cam_resized, use_rgb=True)
+            # display
             vis_uint8 = visualization.astype(np.uint8)
-
-            # 9) display
             h2, w2, ch = vis_uint8.shape
             if ch == 3:
                 from PyQt5.QtGui import QImage, QPixmap
@@ -687,9 +750,12 @@ class InferenceTab(QWidget):
     def _interpret_result(self, res_dict):
         """
         Return (pred_label, [pNoTumor, pPituitary, pMening, pGlioma]).
-        For 'double': "prediction": "no_tumor" or "tumor_subtype_X"
-        For 'binary': "class_index": 0..1
-        For 'multi/simple': "class_index": 0..3
+        For 'double': 
+           "prediction": "no_tumor" or "tumor_subtype_X"
+        For 'binary': 
+           "class_index": 0..1
+        For 'multi/simple': 
+           "class_index": 0..3
         """
         out_probs = [None, None, None, None]
         pred_lbl = "Unknown"
@@ -743,5 +809,153 @@ class InferenceTab(QWidget):
                     out_probs[0] = float(probs[0])
                 else:
                     pred_lbl = "tumor"
-                    out_probs[1] = float(probs[1])  # or out_probs[2], depends on your preference
+                    out_probs[1] = float(probs[1])  # or out_probs[2], depends on preference
         return pred_lbl, out_probs
+
+    # ----------------------------------------------------------------
+    # NEW: BATCH-GRAD-CAM
+    # ----------------------------------------------------------------
+    def on_batch_gradcam(self):
+        """
+        Run Grad-CAM on selected rows in the results_table, 
+        then display them in a GradCamDialog.
+        """
+        if GradCAM is None or show_cam_on_image is None:
+            QMessageBox.warning(self, "Missing grad-cam", "pytorch-grad-cam is not installed (or partial).")
+            return
+
+        if not self.current_inference_model or not hasattr(self.current_inference_model, 'model'):
+            QMessageBox.warning(self, "No Model", "No HPC model is loaded.")
+            return
+
+        method_name = self.combo_gradcam_method.currentText()
+        if method_name.startswith("("):
+            QMessageBox.warning(self, "No Grad-CAM", "No Grad-CAM variant installed.")
+            return
+
+        rows = self.results_table.selectionModel().selectedRows()
+        if not rows:
+            QMessageBox.information(self, "No Selection", "Please select one or more rows in the table.")
+            return
+
+        alpha_slider_val = self.slider_alpha.value()  # 0..100 => compute alpha fraction
+        alpha_fraction = float(alpha_slider_val)/100.0
+
+        # create CAM object
+        cam = self._build_gradcam_variant(method_name, fallback_ok=False)
+        if cam is None:
+            QMessageBox.warning(self, "Unavailable", f"Grad-CAM variant {method_name} is not available.")
+            return
+
+        # We'll generate each result, store as pixmap, then show in a QDialog grid
+        diag = GradCamDialog(self)
+        row_idx = 0
+        col_idx = 0
+
+        for sel_row in rows:
+            r = sel_row.row()
+            file_item = self.results_table.item(r, 0)
+            if not file_item:
+                continue
+            path = file_item.text()
+            if not os.path.isfile(path):
+                continue
+
+            visualization = self._run_gradcam_on_path(path, cam, alpha=alpha_fraction)
+            if visualization is None:
+                continue
+
+            # convert to QPixmap
+            vis_uint8 = visualization.astype(np.uint8)
+            h2, w2, ch = vis_uint8.shape
+            if ch != 3:
+                # skip
+                continue
+            from PyQt5.QtGui import QImage, QPixmap
+            q_img = QImage(vis_uint8.data, w2, h2, ch*w2, QImage.Format_RGB888)
+            pixmap = QPixmap.fromImage(q_img).scaled(256, 256, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
+            # add to dialog
+            title_str = os.path.basename(path)
+            diag.add_gradcam_image(pixmap, title=title_str, row=row_idx, col=col_idx)
+
+            col_idx += 1
+            if col_idx >= 3:  # 3 images per row, for example
+                col_idx = 0
+                row_idx += 1
+
+        diag.exec_()
+
+    def _build_gradcam_variant(self, method_name="GradCAM", fallback_ok=True):
+        """
+        Builds the chosen Grad-CAM variant object. If not found and fallback_ok=True,
+        returns a standard GradCAM if possible.
+        """
+        pytorch_model_instance = self.current_inference_model.model
+        pytorch_model_instance.eval()
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        pytorch_model_instance.to(device)
+
+        # find the final conv layer
+        final_conv = None
+        for name, module in pytorch_model_instance.named_modules():
+            if isinstance(module, torch.nn.Conv2d):
+                final_conv = module
+        if not final_conv:
+            return None
+
+        # pick method
+        if method_name == "GradCAM" and GradCAM is not None:
+            return GradCAM(model=pytorch_model_instance, target_layers=[final_conv])
+        elif method_name == "GradCAM++" and GradCAMPP is not None:
+            return GradCAMPP(model=pytorch_model_instance, target_layers=[final_conv])
+        elif method_name == "ScoreCAM" and ScoreCAM is not None:
+            return ScoreCAM(model=pytorch_model_instance, target_layers=[final_conv])
+        elif method_name == "XGradCAM" and XGradCAM is not None:
+            return XGradCAM(model=pytorch_model_instance, target_layers=[final_conv])
+        elif method_name == "EigenCAM" and EigenCAM is not None:
+            return EigenCAM(model=pytorch_model_instance, target_layers=[final_conv])
+
+        if fallback_ok and GradCAM is not None:
+            # fallback
+            return GradCAM(model=pytorch_model_instance, target_layers=[final_conv])
+        return None
+
+    def _run_gradcam_on_path(self, img_path, cam, alpha=0.5):
+        """
+        Helper that:
+         1) opens the image in grayscale
+         2) transforms => shape [1,1,H,W]
+         3) runs cam(input_tensor)
+         4) overlays the mask on the original
+         5) returns a float32 array [H,W,3] in range 0..255
+        """
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        try:
+            pil_img = Image.open(img_path).convert('L')
+        except Exception as e:
+            QMessageBox.critical(self, "Open Error", f"Could not open {img_path}: {e}")
+            return None
+
+        model_transform = self.current_inference_model.transform
+        input_tensor = model_transform(pil_img).unsqueeze(0).to(device)
+
+        # run
+        grayscale_cam = cam(input_tensor=input_tensor, targets=None)
+        grayscale_cam = grayscale_cam[0, :]  # first batch
+
+        # Convert original to [H,W,3] float32
+        gray_arr = np.array(pil_img, dtype=np.float32) / 255.0
+        rgb_img_np = np.stack([gray_arr]*3, axis=-1)  # shape [H,W,3]
+
+        # resize CAM if needed
+        h, w, _ = rgb_img_np.shape
+        import cv2
+        cam_resized = cv2.resize(grayscale_cam, (w, h), interpolation=cv2.INTER_LINEAR)
+
+        # use show_cam_on_image with user-chosen alpha
+        # show_cam_on_image expects a float32 RGB in [0..1], returns uint8
+        overlay = show_cam_on_image(rgb_img_np, cam_resized, use_rgb=True, image_weight=(1.0 - alpha))
+        return overlay
+
