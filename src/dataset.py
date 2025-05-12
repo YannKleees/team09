@@ -1,71 +1,110 @@
-# File: src/dataset.py
-
 import os
 from PIL import Image
 from torch.utils.data import Dataset
 
 class BrainTumorDataset(Dataset):
     """
-    Expects structure:
-      data_root/
-         Training/
-             ClassA/
-             ClassB/
-             ...
-         Testing/
-             ClassA/
-             ClassB/
-             ...
-    Each class folder has .png/.jpg images.
-
-    If we are told model_variant=='binary', then we unify:
-       "notumor" => label 0
-       anything else => label 1
+    A custom dataset that can handle multiple model variants:
+      - binary: 2-class => 0=NoTumor, 1=Tumor (Pituitary/Meningioma/Glioma)
+      - threeclass: 3-class => 0=Pituitary, 1=Meningioma, 2=Glioma (no NoTumor)
+      - simple (or multi): 4-class => 0=NoTumor, 1=Pituitary, 2=Meningioma, 3=Glioma
+      - double: still store (0=NoTumor,1=Pituitary,2=Meningioma,3=Glioma). The
+        "double" model will read 0 => no tumor, else => yes tumor in the
+        training logic.  (We do not do separate label logic here.)
     """
 
-    def __init__(self, root_dir, subset="Training", transform=None, model_variant="multi"):
+    def __init__(self, root_dir, subset="Training", transform=None, model_variant="simple"):
         super().__init__()
         self.root_dir = root_dir
         self.subset = subset
         self.transform = transform
-        self.model_variant = model_variant
+        self.model_variant = model_variant.lower()
 
         self.data_path = os.path.join(self.root_dir, self.subset)
-        if not os.path.exists(self.data_path):
-            raise FileNotFoundError(f"{self.data_path} does not exist.")
-
-        # Gather all class names (folder names)
-        all_classes = sorted([
-            d for d in os.listdir(self.data_path)
-            if os.path.isdir(os.path.join(self.data_path, d))
-        ])
-
-        if self.model_variant == "binary":
-            self.classes = ["notumor", "tumor"]
-            self.orig_class_to_label = {}
-            for c in all_classes:
-                # adapt this check if your folder name is something else (e.g. "no_tumor")
-                if c.lower().startswith("notumor"):
-                    self.orig_class_to_label[c] = 0
-                else:
-                    self.orig_class_to_label[c] = 1
-        else:
-            # normal multi/double
-            self.classes = all_classes
-            self.class_to_idx = {cls_name: idx for idx, cls_name in enumerate(self.classes)}
+        if not os.path.isdir(self.data_path):
+            raise FileNotFoundError(f"{self.data_path} does not exist. Please check your folder names.")
 
         self.samples = []
-        for class_name in all_classes:
-            class_dir = os.path.join(self.data_path, class_name)
-            if not os.path.isdir(class_dir):
+        self.classes = []  # We will fill or define differently per variant
+
+        if self.model_variant == "simple" or self.model_variant == "multi":
+            # 4-class => subfolders: "NoTumor", "Pituitary", "Meningioma", "Glioma"
+            # numeric labels => 0=NoTumor, 1=Pituitary, 2=Meningioma, 3=Glioma
+            label_map = {
+                "notumor": 0,
+                "pituitary": 1,
+                "meningioma": 2,
+                "glioma": 3
+            }
+            self.classes = ["NoTumor", "Pituitary", "Meningioma", "Glioma"]
+            self._gather_subfolders(label_map)
+
+        elif self.model_variant == "binary":
+            # 2-class => NoTumor (0), Tumor (1). We combine pituitary/meningioma/glioma => 1
+            self.classes = ["NoTumor", "Tumor"]
+            self._gather_binary()
+
+        elif self.model_variant == "threeclass":
+            # 3-class => Pituitary=0, Meningioma=1, Glioma=2
+            # note: we skip or ignore "NoTumor" subfolder entirely
+            label_map = {
+                "pituitary": 0,
+                "meningioma": 1,
+                "glioma": 2
+            }
+            self.classes = ["Pituitary", "Meningioma", "Glioma"]
+            self._gather_subfolders(label_map)
+
+        elif self.model_variant == "double":
+            # For the double-headed net, we still store them as 0..3:
+            #   0=NoTumor, 1=Pituitary, 2=Meningioma, 3=Glioma
+            # The training code decides binary vs. threeclass heads later.
+            label_map = {
+                "notumor": 0,
+                "pituitary": 1,
+                "meningioma": 2,
+                "glioma": 3
+            }
+            self.classes = ["notumor", "pituitary", "meningioma", "glioma"]
+            self._gather_subfolders(label_map)
+
+        else:
+            raise ValueError(f"Unknown model_variant: {self.model_variant}")
+
+    def _gather_subfolders(self, label_map):
+        """ Helper that scans self.data_path for subfolders in label_map. """
+        for subf in os.listdir(self.data_path):
+            sf_path = os.path.join(self.data_path, subf)
+            if not os.path.isdir(sf_path):
                 continue
-            for fname in os.listdir(class_dir):
-                if fname.lower().endswith(('.png', '.jpg', '.jpeg')):
-                    full_path = os.path.join(class_dir, fname)
-                    if self.model_variant == "binary":
-                        label_idx = self.orig_class_to_label[class_name]
-                    else:
-                        label_idx = self.class_to_idx[class_name]
+            sf_lower = subf.lower()
+            if sf_lower in label_map:
+                label_idx = label_map[sf_lower]
+                # gather .png/.jpg/.jpeg
+                for fname in os.listdir(sf_path):
+                    if fname.lower().endswith((".png", ".jpg", ".jpeg")):
+                        full_path = os.path.join(sf_path, fname)
+                        self.samples.append((full_path, label_idx))
+
+    def _gather_binary(self):
+        """
+        In 'binary' variant: 0=NoTumor, else 1=Tumor.
+        So if subfolder is exactly 'NoTumor', label=0, otherwise label=1.
+        """
+        for subf in os.listdir(self.data_path):
+            sf_path = os.path.join(self.data_path, subf)
+            if not os.path.isdir(sf_path):
+                continue
+
+            sf_lower = subf.lower()
+            if sf_lower == "notumor":
+                label_idx = 0
+            else:
+                label_idx = 1
+
+            for fname in os.listdir(sf_path):
+                if fname.lower().endswith((".png", ".jpg", ".jpeg")):
+                    full_path = os.path.join(sf_path, fname)
                     self.samples.append((full_path, label_idx))
 
     def __len__(self):
@@ -80,5 +119,4 @@ class BrainTumorDataset(Dataset):
 
     @property
     def is_empty(self):
-        """Returns True if this dataset has zero samples."""
         return (len(self.samples) == 0)

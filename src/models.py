@@ -1,9 +1,7 @@
-# File: src/models.py
-
 import torch.nn as nn
 
 ################################################################################
-# Single-branch CNN for EITHER binary or multi-class
+# Single-branch CNN for any # of classes
 ################################################################################
 
 class SimpleCNN(nn.Module):
@@ -42,14 +40,14 @@ class SimpleCNN(nn.Module):
         return x
 
 ################################################################################
-# Two‐headed CNN (binary + multi)
+# Two‐headed CNN => "double" (binary + threeclass)
 ################################################################################
 
 class DoubleHeadCNN(nn.Module):
     """
     A CNN that uses a single shared feature extractor but has two output "heads":
       1) Binary: no_tumor vs tumor
-      2) Multi: 3 tumor subtypes (or 4 if needed)
+      2) 3-class: pituitary / meningioma / glioma
     """
     def __init__(self, input_size=128, dropout=0.0):
         super().__init__()
@@ -66,20 +64,22 @@ class DoubleHeadCNN(nn.Module):
         )
         flattened_dim = 16 * (input_size // 4) * (input_size // 4)
 
+        # Head 1: Binary => NoTumor vs Tumor
         self.head_binary = nn.Sequential(
             nn.Flatten(),
             nn.Linear(flattened_dim, 32),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(32, 2)  # no_tumor vs tumor
+            nn.Linear(32, 2)
         )
 
-        self.head_multi = nn.Sequential(
+        # Head 2: threeclass => Pituitary, Meningioma, Glioma
+        self.head_three = nn.Sequential(
             nn.Flatten(),
             nn.Linear(flattened_dim, 32),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(32, 3)  # or 4 if you want 3 subtypes + notumor
+            nn.Linear(32, 3)
         )
 
     def forward(self, x, mode='binary'):
@@ -87,46 +87,38 @@ class DoubleHeadCNN(nn.Module):
         if mode == 'binary':
             return self.head_binary(feats)
         else:
-            return self.head_multi(feats)
+            return self.head_three(feats)
 
 
 ################################################################################
-# Helper to retrieve a chosen model
+# get_model with new names: "simple4", "threeclass", "binary", "double"
 ################################################################################
 
 def get_model(model_variant, input_size=128, dropout=0.0):
     """
-    Create a model instance based on model_variant:
-       "binary", "multi", "double", "simple", "transfer", or "custom".
-
-    Returns:
-       model (nn.Module), num_classes (None if 'double')
+    Create a model instance:
+      - simple4 => single CNN, 4-class
+      - threeclass => single CNN, 3-class
+      - binary => single CNN, 2-class
+      - double => two-headed net (binary + threeclass)
+      - transfer / custom => placeholders
     """
-
-    if model_variant == "binary":
-        # Single-head CNN for exactly 2 classes
-        return SimpleCNN(num_classes=2, input_size=input_size, dropout=dropout), 2
-
-    elif model_variant == "multi":
-        # Single-head CNN for multiple classes (set to 4 by default).
+    if model_variant == "simple":
         return SimpleCNN(num_classes=4, input_size=input_size, dropout=dropout), 4
 
-    elif model_variant == "double":
-        # Two-headed CNN
-        return DoubleHeadCNN(input_size=input_size, dropout=dropout), None
+    elif model_variant == "threeclass":
+        return SimpleCNN(num_classes=3, input_size=input_size, dropout=dropout), 3
 
-    elif model_variant == "simple":
-        # "Simple" also uses the same baseline, but let's default to 2 classes
-        # (you can adjust to 4 if you prefer).
+    elif model_variant == "binary":
         return SimpleCNN(num_classes=2, input_size=input_size, dropout=dropout), 2
 
-    elif model_variant == "transfer":
-        # TODO: implement your transfer learning architecture
-        raise NotImplementedError("Transfer learning model => TODO here.")
+    elif model_variant == "double":
+        return DoubleHeadCNN(input_size=input_size, dropout=dropout), None
 
+    elif model_variant == "transfer":
+        raise NotImplementedError("Transfer learning => implement your advanced net here.")
     elif model_variant == "custom":
-        # TODO: implement your custom advanced model
-        raise NotImplementedError("Custom model => TODO here.")
+        raise NotImplementedError("Custom model => implement your advanced net here.")
 
     else:
-        raise ValueError(f"Unknown model_variant: {model_variant}")
+        raise ValueError(f"Unknown model variant: {model_variant}")

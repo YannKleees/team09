@@ -1,5 +1,3 @@
-# File: gui/main_window.py
-
 import sys
 from PyQt5.QtWidgets import (
     QMainWindow, QTabWidget, QStyleFactory, QApplication
@@ -20,32 +18,41 @@ class MainWindow(QMainWindow):
     """
     A single-application window that houses all the tabs:
       - Dashboard
+      - Info
       - Preprocessing
       - Augmentation
       - Comparison
       - Auto Search
-      - Advanced EDA
       - Inference
-    (NOTE: Training tab removed)
     """
 
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Brain Tumor MRI Toolkit")
-        self.setWindowIcon(QIcon())  # If you have an icon, set it here or remove entirely
-        self.resize(1200, 800)
+        self.setWindowIcon(QIcon())  # If you have an icon, set it or remove
 
+        self.resize(1200, 800)
         self.tab_widget = QTabWidget()
         self.tab_widget.setTabPosition(QTabWidget.North)
 
-        # Add the relevant tabs
+        # Add tabs
         self.tab_widget.addTab(DashboardTab(), "Dashboard")
         self.tab_widget.addTab(InfoTab(), "Info")
         self.tab_widget.addTab(PreprocessingTab(), "Preprocessing")
         self.tab_widget.addTab(AugmentationTab(), "Augmentation")
         self.tab_widget.addTab(CompareTab(), "Comparison")
-        self.tab_widget.addTab(AutoSearchTab(), " Auto Search")
-        self.tab_widget.addTab(InferenceTab(), "Inference")
+
+        # HPC (AutoSearch)
+        self.auto_search_tab = AutoSearchTab()
+        self.tab_widget.addTab(self.auto_search_tab, "Auto Search")
+
+        # Inference
+        self.inference_tab = InferenceTab()
+        self.tab_widget.addTab(self.inference_tab, "Inference")
+
+        # CONNECT HPC's "hpc_updated" => Inference tab reload
+        self.auto_search_tab.hpc_updated.connect(self.inference_tab.reload_hpc_combos)
+
         self.setCentralWidget(self.tab_widget)
         self._setup_modern_style()
 
@@ -80,6 +87,7 @@ class MainWindow(QMainWindow):
         QLabel { font-size: 10pt; }
         """
         self.setStyleSheet(qss)
+
 
 def main():
     app = QApplication(sys.argv)

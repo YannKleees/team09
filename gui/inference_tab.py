@@ -1,8 +1,11 @@
 """
 inference_tab.py
 
-Merged "Upgraded InferenceTab" with HPC combos, single vs batch inference,
-collapsible HPC info, AND a Grad-CAM feature contributed by a friend.
+Upgraded InferenceTab:
+ - Collapsible HPC info (ConfMat, ROC, metrics)
+ - Single vs. Batch inference with HPC combos
+ - Grad-CAM (pytorch-grad-cam)
+ - Class label fix for "simple" (4-class) => [0=NoTumor,1=Pituitary,2=Meningioma,3=Glioma]
 """
 
 import os
@@ -11,6 +14,7 @@ import csv
 import warnings
 import torch
 import torch.nn.functional as F
+import cv2
 from PIL import Image
 
 from PyQt5.QtWidgets import (
@@ -31,21 +35,22 @@ try:
     from pytorch_grad_cam import GradCAM
     from pytorch_grad_cam.utils.image import show_cam_on_image
 except ImportError:
-    GradCAM = None  # We'll handle if not installed
+    GradCAM = None
+
 import numpy as np
 
 from logic.inference import InferenceModel
 
-
-# HPC combos JSON file
 _HPC_RESULTS_JSON = "hpc_results.json"
 
-# For "multi" 4 classes: 0=Glioma,1=Meningioma,2=NoTumor,3=Pituitary
-CLASS_LABELS_4 = ["Glioma", "Meningioma", "NoTumor", "Pituitary"]
+###
+### IMPORTANT: For "simple" or "multi" 4-class, we define:
+###   0=NoTumor, 1=Pituitary, 2=Meningioma, 3=Glioma
+###
+CLASS_LABELS_4 = ["notumor", "pituitary", "meningioma", "glioma"]
 
 
 def load_hpc_results_json(path=_HPC_RESULTS_JSON):
-    """Load HPC combos from JSON (saved HPC search)."""
     if not os.path.isfile(path):
         return []
     try:
@@ -69,9 +74,6 @@ def load_hpc_results_json(path=_HPC_RESULTS_JSON):
 
 
 class BatchInferenceWorker(QThread):
-    """
-    Runs inference in background for a batch of images so the UI stays responsive.
-    """
     progress_msg = pyqtSignal(str)
     finished_batch = pyqtSignal(list)
 
@@ -98,19 +100,10 @@ class BatchInferenceWorker(QThread):
 
 
 class InferenceTab(QWidget):
-    """
-    Upgraded InferenceTab that:
-     - Auto-loads HPC combos from JSON
-     - Single vs. Batch in separate group boxes (hidden when not in use)
-     - Collapsible HPC Info (ConfMat, ROC, metrics)
-     - QThread usage for batch inference
-     - Grad-CAM analysis button in single-inference area
-    """
-
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        # Basic style to make group boxes, table, etc. look nicer
+        # Basic style
         self.setStyleSheet("""
             QGroupBox {
                 border: 1px solid #cccccc;
@@ -165,7 +158,7 @@ class InferenceTab(QWidget):
         container_layout.setContentsMargins(10, 10, 10, 10)
         container_layout.setSpacing(8)
 
-        # HPC model selection
+        # HPC combos
         hpc_box = QGroupBox("Select HPC Model")
         vb_hpc = QVBoxLayout(hpc_box)
         self.hpc_combos = load_hpc_results_json()
@@ -174,7 +167,7 @@ class InferenceTab(QWidget):
         vb_hpc.addWidget(self.model_combo)
         container_layout.addWidget(hpc_box)
 
-        # Collapsible HPC info
+        # HPC info collapsible
         self.chk_show_info = QCheckBox("Expand HPC Info (ConfMat, ROC, Metrics)")
         self.chk_show_info.setChecked(False)
         self.chk_show_info.stateChanged.connect(self._toggle_hpc_info)
@@ -183,8 +176,8 @@ class InferenceTab(QWidget):
         self.info_box = QGroupBox("HPC Model Info")
         vb_info = QVBoxLayout(self.info_box)
 
+        # row of Confmat + ROC
         row_plots = QHBoxLayout()
-        # ConfMat
         self.confmat_canvas = MplCanvas(self, width=4, height=3)
         self.confmat_toolbar = NavigationToolbar(self.confmat_canvas, self)
         left_g = QVBoxLayout()
@@ -193,7 +186,6 @@ class InferenceTab(QWidget):
         left_g.addWidget(self.confmat_toolbar)
         row_plots.addLayout(left_g)
 
-        # ROC
         self.roc_canvas = MplCanvas(self, width=4, height=3)
         self.roc_toolbar = NavigationToolbar(self.roc_canvas, self)
         right_g = QVBoxLayout()
@@ -209,15 +201,15 @@ class InferenceTab(QWidget):
         self.metrics_text.setReadOnly(True)
         vb_info.addWidget(self.metrics_text)
 
-        # Refresh HPC info button
+        # Refresh HPC info
         self.btn_show_info = QPushButton("Refresh HPC Info")
         self.btn_show_info.clicked.connect(self.show_hpc_info)
         vb_info.addWidget(self.btn_show_info)
 
         container_layout.addWidget(self.info_box)
-        self.info_box.hide()  # default collapsed
+        self.info_box.hide()
 
-        # Single vs batch radio
+        # single vs. batch
         mode_box = QGroupBox("Inference Mode")
         hb_mode = QHBoxLayout(mode_box)
         self.radio_single = QRadioButton("Single Image")
@@ -226,14 +218,12 @@ class InferenceTab(QWidget):
         hb_mode.addWidget(self.radio_single)
         hb_mode.addWidget(self.radio_batch)
         container_layout.addWidget(mode_box)
-
         self.radio_single.toggled.connect(self._on_mode_changed)
 
         # Single group
         self.single_box = QGroupBox("Single Image Inference & Grad-CAM")
         form_s = QFormLayout(self.single_box)
 
-        # single image row
         self.single_img_line = QLineEdit()
         btn_browse_single = QPushButton("Browse Image...")
         btn_browse_single.clicked.connect(self.on_browse_single)
@@ -242,7 +232,6 @@ class InferenceTab(QWidget):
         h_s.addWidget(btn_browse_single)
         form_s.addRow("Image:", h_s)
 
-        # 2 buttons: run inference, run grad-cam
         btn_row = QHBoxLayout()
         self.btn_run_single = QPushButton("Run Single Inference")
         self.btn_run_single.clicked.connect(self.on_run_single_inference)
@@ -254,7 +243,6 @@ class InferenceTab(QWidget):
 
         form_s.addRow(btn_row)
 
-        # Grad-CAM display area
         self.grad_cam_display_label = QLabel("Grad-CAM output will appear here.")
         self.grad_cam_display_label.setObjectName("GradCamDisplayLabel")
         self.grad_cam_display_label.setAlignment(Qt.AlignCenter)
@@ -297,12 +285,12 @@ class InferenceTab(QWidget):
 
         container_layout.addWidget(self.batch_box)
 
-        # Table
+        # Table for results
         self.results_table = QTableWidget()
         self.results_table.setColumnCount(7)
         self.results_table.setHorizontalHeaderLabels([
             "File", "Predicted",
-            "Prob(Glioma)", "Prob(Mening)", "Prob(NoTumor)", "Prob(Pituitary)",
+            "Prob(NoTumor)", "Prob(Pituitary)", "Prob(Meningioma)", "Prob(Glioma)",
             "Error"
         ])
         self.results_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -321,7 +309,7 @@ class InferenceTab(QWidget):
         self._populate_hpc_combo()
         self.model_combo.currentIndexChanged.connect(self.on_model_changed)
         self._try_auto_load_first()
-        self._on_mode_changed()  # set initial hide/show
+        self._on_mode_changed()
 
     # ----------------------------------------------------------------
     # HPC combos
@@ -352,7 +340,7 @@ class InferenceTab(QWidget):
             self.current_inference_model = None
             return
 
-        # parse resize from combo_str
+        # parse "resize=XYZ" from combo_str, default 128
         resize_val = 128
         for part in chosen["combo_str"].split(","):
             part = part.strip().lower()
@@ -387,7 +375,6 @@ class InferenceTab(QWidget):
             self.info_box.hide()
 
     def show_hpc_info(self):
-        """Refresh HPC info if expanded."""
         if not self.info_box.isVisible():
             return
 
@@ -407,10 +394,9 @@ class InferenceTab(QWidget):
         roc_ = combo.get("roc", None)
         mets = combo.get("metrics", None)
 
-        # Confmat
+        # ConfMat
         axc = self.confmat_canvas.figure.add_subplot(111)
-        if confmat:
-            import numpy as np
+        if confmat is not None:
             arr = np.array(confmat, dtype=int)
             im = axc.imshow(arr, cmap="Blues")
             axc.set_title("Confusion Matrix", fontsize=10)
@@ -454,7 +440,7 @@ class InferenceTab(QWidget):
             f1_ = mets.get("f1", [])
             sup_ = mets.get("support", [])
             for i in range(len(prec)):
-                lines.append(f"Class {i}: p={prec[i]:.3f}, r={rec_[i]:.3f}, f1={f1_[i]:.3f}, sup={sup_[i]}")
+                lines.append(f"Class {i}: prec={prec[i]:.3f}, rec={rec_[i]:.3f}, f1={f1_[i]:.3f}, sup={sup_[i]}")
             micro = mets.get("micro_f1", None)
             macro = mets.get("macro_f1", None)
             if micro is not None:
@@ -475,7 +461,7 @@ class InferenceTab(QWidget):
             self.batch_box.setVisible(True)
 
     # ----------------------------------------------------------------
-    # Single Inference
+    # Single
     # ----------------------------------------------------------------
     def on_browse_single(self):
         dlg = QFileDialog(self, "Select Single Image")
@@ -512,12 +498,7 @@ class InferenceTab(QWidget):
     # Grad-CAM
     # ----------------------------------------------------------------
     def on_grad_cam_analysis(self):
-        """
-        Generates a Grad-CAM visualization for the single image in self.single_img_line,
-        using the currently loaded HPC model (self.current_inference_model).
-        The resulting heatmap is displayed in self.grad_cam_display_label.
-        """
-        if not GradCAM:
+        if GradCAM is None:
             QMessageBox.warning(self, "Missing grad-cam", "pytorch-grad-cam is not installed.")
             return
 
@@ -531,78 +512,82 @@ class InferenceTab(QWidget):
             return
 
         try:
-            # Load model references
+            # 1) model & input
             pytorch_model_instance = self.current_inference_model.model
-            model_transform = self.current_inference_model.transform
             pytorch_model_instance.eval()
-
-            # Load image as PIL (RGB for Grad-CAM overlay usually)
-            pil_img = Image.open(img_path).convert('RGB')
-            input_tensor = model_transform(pil_img).unsqueeze(0)
             device = "cuda" if torch.cuda.is_available() else "cpu"
-            input_tensor = input_tensor.to(device)
+            pytorch_model_instance.to(device)
 
-            # If the transform is grayscale, fix for 3-ch
-            if input_tensor.shape[1] == 1:
-                # repeat channels if needed
-                input_tensor = input_tensor.repeat(1, 3, 1, 1)
+            # 2) open as grayscale => single channel
+            pil_img = Image.open(img_path).convert('L')
 
-            # Identify a target convolutional layer
-            # This depends on the architecture. We'll try to find the last Conv2D:
-            target_layer = None
+            # 3) transform => shape [1,1,H,W]
+            model_transform = self.current_inference_model.transform
+            input_tensor = model_transform(pil_img).unsqueeze(0).to(device)
+
+            # 4) final conv
             final_conv = None
             for name, module in pytorch_model_instance.named_modules():
                 if isinstance(module, torch.nn.Conv2d):
                     final_conv = module
-            if final_conv is not None:
-                target_layer = final_conv
-
-            if not target_layer:
-                QMessageBox.warning(self, "Grad-CAM Error",
-                                    "Could not find a convolutional layer in the model.")
+            if not final_conv:
+                QMessageBox.warning(self, "Grad-CAM Error", "No Conv2d layer found in model.")
                 return
 
-            # Create GradCAM object
-            cam = GradCAM(model=pytorch_model_instance, target_layers=[target_layer], use_cuda=torch.cuda.is_available())
+            # 5) create GradCAM
+            cam = GradCAM(model=pytorch_model_instance, target_layers=[final_conv])
 
-            # Run the CAM
-            grayscale_cam = cam(input_tensor=input_tensor, targets=None)  # uses predicted class
-            grayscale_cam = grayscale_cam[0, :]  # first (only) image
+            # 6) run => get mask (128x128 if input_size=128)
+            grayscale_cam = cam(input_tensor=input_tensor, targets=None)
+            grayscale_cam = grayscale_cam[0, :]
 
-            # Overlay on the original
-            rgb_img_np = np.array(pil_img) / 255.0
-            if len(rgb_img_np.shape) == 2:
-                rgb_img_np = np.stack([rgb_img_np]*3, axis=-1)
+            # 7) convert original PIL -> 3ch array
+            gray_arr = np.array(pil_img, dtype=np.float32) / 255.0
+            rgb_img_np = np.stack([gray_arr]*3, axis=-1)  # (H,W,3)
 
-            visualization = show_cam_on_image(rgb_img_np, grayscale_cam, use_rgb=True)
-            # Convert NumPy (uint8) back to QImage for display
+            # resize the cam mask if needed
+            h, w, _ = rgb_img_np.shape
+            import cv2
+            grayscale_cam_resized = cv2.resize(grayscale_cam, (w, h), interpolation=cv2.INTER_LINEAR)
+
+            # 8) overlay
+            from pytorch_grad_cam.utils.image import show_cam_on_image
+            visualization = show_cam_on_image(rgb_img_np, grayscale_cam_resized, use_rgb=True)
             vis_uint8 = visualization.astype(np.uint8)
-            h, w, ch = vis_uint8.shape
+
+            # 9) display
+            h2, w2, ch = vis_uint8.shape
             if ch == 3:
                 from PyQt5.QtGui import QImage, QPixmap
-                q_img = QImage(vis_uint8.data, w, h, ch * w, QImage.Format_RGB888)
-                pixmap = QPixmap.fromImage(q_img)
-                # scale to fit label
-                pixmap = pixmap.scaled(self.grad_cam_display_label.width(),
-                                       self.grad_cam_display_label.height(),
-                                       Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                q_img = QImage(vis_uint8.data, w2, h2, ch*w2, QImage.Format_RGB888)
+                pixmap = QPixmap.fromImage(q_img).scaled(
+                    self.grad_cam_display_label.width(),
+                    self.grad_cam_display_label.height(),
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation
+                )
                 self.grad_cam_display_label.setPixmap(pixmap)
             else:
                 self.grad_cam_display_label.setText("Grad-CAM result not in RGB format.")
-
         except Exception as e:
             QMessageBox.critical(self, "Grad-CAM Error", f"Error generating Grad-CAM:\n{str(e)}")
-            import traceback
-            print(traceback.format_exc())
 
     # ----------------------------------------------------------------
-    # Batch Inference
+    # Batch
     # ----------------------------------------------------------------
     def on_browse_batch_folder(self):
         dlg = QFileDialog(self, "Select Folder for Batch")
         dlg.setFileMode(QFileDialog.Directory)
         if dlg.exec_():
             self.batch_folder_line.setText(dlg.selectedFiles()[0])
+
+    def reload_hpc_combos(self):
+        self.hpc_combos = load_hpc_results_json()
+        self._populate_hpc_combo()
+        if self.hpc_combos:
+            self.model_combo.setCurrentIndex(0)
+        else:
+            self.model_combo.setCurrentIndex(-1)
 
     def on_add_batch_images(self):
         dlg = QFileDialog(self, "Add Multiple Images")
@@ -653,27 +638,16 @@ class InferenceTab(QWidget):
         for i, rdict in enumerate(results):
             fpath = rdict.get("file", "")
             self._fill_table_row(i, fpath, rdict)
-
         self.batch_worker.deleteLater()
         self.batch_worker = None
 
     # ----------------------------------------------------------------
-    # Fill Table
+    # Fill table
     # ----------------------------------------------------------------
     def _fill_table_row(self, row_idx, file_path, res_dict):
         """
-        Columns:
-          0: File
-          1: Predicted
-          2: Prob(Glioma)
-          3: Prob(Mening)
-          4: Prob(NoTumor)
-          5: Prob(Pituitary)
-          6: Error
-        We'll also color-code the row:
-          - Error => entire row red
-          - "NoTumor" => green
-          - (Tumor/Glioma/Meningioma/Pituitary) => orange
+        We assume 4 columns for "NoTumor, Pituitary, Meningioma, Glioma" in that order,
+        plus a "Predicted" column.
         """
         file_item = QTableWidgetItem(file_path)
         self.results_table.setItem(row_idx, 0, file_item)
@@ -691,7 +665,7 @@ class InferenceTab(QWidget):
 
         pred_label, probs_4 = self._interpret_result(res_dict)
 
-        # Pred item
+        # predicted
         pred_item = QTableWidgetItem(pred_label)
         if pred_label.lower() == "notumor":
             pred_item.setForeground(QtGui.QColor("green"))
@@ -699,7 +673,7 @@ class InferenceTab(QWidget):
             pred_item.setForeground(QtGui.QColor("darkorange"))
         self.results_table.setItem(row_idx, 1, pred_item)
 
-        # Prob columns
+        # probabilities
         for i in range(4):
             val_s = "N/A"
             if probs_4[i] is not None:
@@ -707,15 +681,15 @@ class InferenceTab(QWidget):
             prob_item = QTableWidgetItem(val_s)
             self.results_table.setItem(row_idx, 2 + i, prob_item)
 
-        # error col is empty
+        # error col
         self.results_table.setItem(row_idx, 6, QTableWidgetItem(""))
 
     def _interpret_result(self, res_dict):
         """
-        Return (pred_label, [pGlioma, pMening, pNoTumor, pPitu]).
-        - 'double' => "prediction": "no_tumor" or "tumor_subtype_#"
-        - 'binary' => "class_index": 0..1, "probabilities": length=2
-        - 'multi'  => "class_index": 0..3, "probabilities": length=4
+        Return (pred_label, [pNoTumor, pPituitary, pMening, pGlioma]).
+        For 'double': "prediction": "no_tumor" or "tumor_subtype_X"
+        For 'binary': "class_index": 0..1
+        For 'multi/simple': "class_index": 0..3
         """
         out_probs = [None, None, None, None]
         pred_lbl = "Unknown"
@@ -725,54 +699,49 @@ class InferenceTab(QWidget):
 
         # double
         if "prediction" in res_dict:
-            # "no_tumor" => index 2=NoTumor
-            # "tumor_subtype_0" => 0=Glioma, etc.
+            # "no_tumor" => index=0 for "NoTumor" in our array
+            # "tumor_subtype_0 => Pituitary, 1=>Meningioma, 2=>Glioma"
             pred = res_dict["prediction"].lower()
             if pred == "no_tumor":
-                pred_lbl = "NoTumor"
+                pred_lbl = "notumor"
                 bin_p = res_dict.get("binary_probs", [1.0, 0.0])
-                out_probs[2] = float(bin_p[0])  # noTumor
-                out_probs[0] = 0.0
+                out_probs[0] = float(bin_p[0])  # NoTumor => store in index 0
                 out_probs[1] = 0.0
+                out_probs[2] = 0.0
                 out_probs[3] = 0.0
             else:
-                # "tumor_subtype_X"
+                # tumor_subtype_X
                 idx_s = pred.rsplit("_", 1)[-1]
                 try:
                     sub_i = int(idx_s)
                 except:
                     sub_i = 0
+                # sub_i=0 => Pituitary, sub_i=1 => Meningioma, sub_i=2 => Glioma
                 if sub_i == 0:
-                    pred_lbl = "Glioma"
+                    pred_lbl = "pituitary"
+                    out_probs[1] = 1.0
                 elif sub_i == 1:
-                    pred_lbl = "Meningioma"
+                    pred_lbl = "meningioma"
+                    out_probs[2] = 1.0
                 else:
-                    pred_lbl = "Pituitary"
-                mp = res_dict.get("multi_probs", [0.0, 0.0, 0.0])
-                out_probs[0] = float(mp[0]) if len(mp) > 0 else 0.0
-                out_probs[1] = float(mp[1]) if len(mp) > 1 else 0.0
-                out_probs[2] = 0.0
-                out_probs[3] = float(mp[2]) if len(mp) > 2 else 0.0
+                    pred_lbl = "glioma"
+                    out_probs[3] = 1.0
 
-        # single-head => "class_index", "probabilities"
         elif "class_index" in res_dict and "probabilities" in res_dict:
             cid = int(res_dict["class_index"])
             probs = res_dict["probabilities"]
-            # multi => 4 classes
+
             if len(probs) == 4:
-                if 0 <= cid < 4:
-                    pred_lbl = CLASS_LABELS_4[cid]
+                # simple => 0=NoTumor, 1=Pituitary, 2=Meningioma, 3=Glioma
+                pred_lbl = CLASS_LABELS_4[cid] if 0 <= cid < 4 else "Unknown"
                 for i in range(4):
                     out_probs[i] = float(probs[i])
             elif len(probs) == 2:
-                # binary => class0=NoTumor, class1=Tumor => map tumor => "Glioma"
+                # binary => class0=NoTumor, class1=Tumor
                 if cid == 0:
-                    pred_lbl = "NoTumor"
+                    pred_lbl = "notumor"
+                    out_probs[0] = float(probs[0])
                 else:
-                    pred_lbl = "Tumor"
-                out_probs[0] = float(probs[1]) if cid == 1 else 0.0
-                out_probs[1] = 0.0
-                out_probs[2] = float(probs[0])
-                out_probs[3] = 0.0
-
+                    pred_lbl = "tumor"
+                    out_probs[1] = float(probs[1])  # or out_probs[2], depends on your preference
         return pred_lbl, out_probs

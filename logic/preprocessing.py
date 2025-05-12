@@ -5,17 +5,17 @@ import numpy as np
 from PIL import Image, ImageFilter
 import cv2  # for CLAHE-based histogram eq
 
-from logic.duplicates import remove_duplicates_across_dataset
+# IMPORT the new remove_duplicates_recursively function
+from logic.duplicates import remove_duplicates_recursively
 
 def _adaptive_histogram_equalize(pil_img):
     """
     Applies OpenCV's CLAHE to a PIL grayscale image.
     """
-    arr = np.array(pil_img, dtype=np.uint8)  # shape: (H, W)
+    arr = np.array(pil_img, dtype=np.uint8)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    eq_arr = clahe.apply(arr)  # result is uint8
-    out_pil = Image.fromarray(eq_arr)
-    return out_pil
+    eq_arr = clahe.apply(arr)
+    return Image.fromarray(eq_arr)
 
 def _get_pil_interpolation(mode_str):
     """
@@ -29,7 +29,7 @@ def _get_pil_interpolation(mode_str):
     elif mode_str == "LANCZOS":
         return Image.LANCZOS
     else:
-        return Image.BILINEAR  # default
+        return Image.BILINEAR
 
 def preprocess_entire_dataset(
     root_dir,
@@ -44,12 +44,12 @@ def preprocess_entire_dataset(
     """
     Copy images from 'root_dir' (with subfolders e.g. Training/Testing) into 'dst_root'.
     Then optionally:
-      - remove duplicates (MD5 hash check)
+      - remove duplicates (MD5 hash check) [RECURSIVE]
       - apply CLAHE-based histogram eq
       - apply blur/sharpen filters
       - resize with chosen interpolation
 
-    progress_fn: an optional callback(current_idx, total_count).
+    progress_fn: optional callback(current_idx, total_count).
 
     Returns:
         dist_info (dict): distribution info { subset: {class: count} }
@@ -69,7 +69,6 @@ def preprocess_entire_dataset(
 
     subsets = ["Training", "Testing"]
     if os.path.exists(dst_root):
-        # we could optionally remove existing. or do partial. let's do:
         shutil.rmtree(dst_root, ignore_errors=True)
     os.makedirs(dst_root, exist_ok=True)
 
@@ -104,9 +103,9 @@ def preprocess_entire_dataset(
                     except Exception as e:
                         error_log.append(f"CopyError: {src_path} => {e}")
 
-    # Step 2: Remove duplicates if requested
+    # Step 2: Remove duplicates *recursively* if requested
     if delete_duplicates:
-        duplicates = remove_duplicates_across_dataset(dst_root)
+        duplicates = remove_duplicates_recursively(dst_root)
         dups_removed = len(duplicates)
         for dup_file in duplicates:
             try:
@@ -136,7 +135,6 @@ def preprocess_entire_dataset(
     interp_mode = _get_pil_interpolation(interpolation)
     n_images = len(all_image_paths)
 
-    # define a small helper for applying blur/sharpen
     def apply_filter(pil_im, mode):
         if mode == "blur":
             return pil_im.filter(ImageFilter.BLUR)
@@ -152,21 +150,21 @@ def preprocess_entire_dataset(
 
         try:
             with Image.open(ipath).convert('L') as im:
-                # 3a) optional hist eq
+                # hist eq if requested
                 if apply_hist_eq:
                     im = _adaptive_histogram_equalize(im)
-                # 3b) optional blur/sharpen
+                # blur/sharpen if requested
                 im = apply_filter(im, filter_mode.lower())
-                # 3c) resize
+                # resize
                 im = im.resize((resize_val, resize_val), interp_mode)
-                # 3d) save
+                # save
                 im.save(ipath)
                 total_processed += 1
 
         except Exception as e:
             error_log.append(f"ProcessingError: {ipath} => {e}")
 
-    # Step 4: Summarize distribution in dst_root
+    # Step 4: Summarize distribution
     for subset in subsets:
         subset_path = os.path.join(dst_root, subset)
         if os.path.isdir(subset_path):

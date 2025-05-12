@@ -1,5 +1,3 @@
-# File: src/experiment.py
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -72,12 +70,9 @@ class Experiment:
             strong_aug=self.strong_aug
         )
 
-        # We'll create a placeholder model now. We'll finalize the correct num_classes after data is loaded
-        # For "binary" or "multi" or "double", we do normal approach
-        # If "transfer" or "custom", we do #TODO placeholders:
+        # Create a placeholder model now. We'll finalize correct #classes later
         if model_variant in ["transfer", "custom"]:
-            # Just raise for now
-            raise NotImplementedError(f"'{model_variant}' => TODO: implement your advanced architecture.")
+            raise NotImplementedError(f"'{model_variant}' => advanced architecture not implemented.")
         else:
             self.model, self.num_classes = get_model(
                 model_variant=self.model_variant,
@@ -99,10 +94,9 @@ class Experiment:
 
     def load_data(self):
         """
-        Loads Training + Testing sets (for single-run approach).
-        If folds>1, we only use the 'Training' set for k-fold, ignoring 'Testing'.
-        Then detect how many classes truly exist in the train set.
-        If 'multi', rebuild the model to match that class count (unless double).
+        Loads Training + Testing sets for single-run (folds=1),
+        or just the Training set for k-fold (folds>1).
+        Then detect how many classes. If 'multi' or 'simple', we rebuild the model to match that #.
         """
         if self.folds > 1:
             self.log_func("Loading entire Training folder for k-fold CV.")
@@ -110,7 +104,7 @@ class Experiment:
                 root_dir=self.data_root,
                 subset="Training",
                 transform=self.transform,
-                model_variant=self.model_variant  # pass so it can unify classes if needed
+                model_variant=self.model_variant
             )
             self.test_dataset = None
         else:
@@ -127,30 +121,29 @@ class Experiment:
                 transform=self.transform,
                 model_variant=self.model_variant
             )
-            self.train_loader = DataLoader(
-                train_set, batch_size=self.batch_size, shuffle=True
-            )
-            self.val_loader = DataLoader(
-                val_set, batch_size=self.batch_size, shuffle=False
-            )
+            self.train_loader = DataLoader(train_set, batch_size=self.batch_size, shuffle=True)
+            self.val_loader = DataLoader(val_set, batch_size=self.batch_size, shuffle=False)
             self.train_dataset = train_set
             self.test_dataset = val_set
 
-        # how many classes are we effectively using
+        # how many classes?
         if self.model_variant == "binary":
             real_num_classes = 2
         elif self.model_variant == "double":
-            real_num_classes = None  # double => separate heads
-        else:
-            # multi
+            # double has separate heads => None to indicate
+            real_num_classes = None
+        elif self.model_variant in ["multi", "simple"]:
+            # same approach => read from dataset
             real_num_classes = len(self.train_dataset.classes)
+        else:
+            raise ValueError(f"Unknown model_variant: {self.model_variant}")
 
         self.log_func(f"[load_data] Using model_variant='{self.model_variant}'. Detected {real_num_classes} class(es).")
 
-        # If "multi", we might rebuild the model to match real_num_classes
-        if self.model_variant == "multi":
-            self.log_func(f"Rebuilding 'multi' model with {real_num_classes} output classes.")
+        # If "multi" or "simple", rebuild the single CNN to match real_num_classes
+        if self.model_variant in ["multi", "simple"]:
             from src.models import SimpleCNN
+            self.log_func(f"Rebuilding '{self.model_variant}' model with {real_num_classes} output classes.")
             self.model = SimpleCNN(
                 num_classes=real_num_classes,
                 input_size=self.input_size,
@@ -165,8 +158,8 @@ class Experiment:
             weight_decay=self.weight_decay
         )
 
-        if self.model_variant == "transfer" or self.model_variant == "custom":
-            raise NotImplementedError(f"Model variant '{self.model_variant}' => TODO advanced architecture.")
+        if self.model_variant in ["transfer", "custom"]:
+            raise NotImplementedError(f"Model variant '{self.model_variant}' => not implemented.")
 
         if self.model_variant == "double":
             # separate heads
@@ -175,11 +168,7 @@ class Experiment:
             return
 
         # single-head
-        if self.model_variant == "binary":
-            # we only have 2 classes
-            pass
-
-        if self.use_class_weight and self.model_variant != "double":
+        if self.use_class_weight and self.model_variant not in ["double"]:
             freq = [0] * self.num_classes
             for _, label in self.train_dataset.samples:
                 freq[label] += 1
@@ -208,7 +197,7 @@ class Experiment:
 
         for ep in range(epochs):
             train_loss, train_acc, _ = self._train_one_epoch()
-            val_metrics = self._evaluate()
+            val_metrics = self._evaluate()  # includes confusion matrix etc.
             val_acc = val_metrics["accuracy"]
 
             all_train_acc.append(train_acc)
@@ -221,6 +210,7 @@ class Experiment:
             msg = f"Epoch {ep+1}/{epochs} | TrainAcc={train_acc:.2f}% | ValAcc={val_acc:.2f}%"
             self.log_func(msg)
 
+            # Track best val_acc so far => store final_roc/confmat/etc.
             if val_acc > best_val_acc:
                 best_val_acc = val_acc
                 no_improve_count = 0
@@ -230,7 +220,7 @@ class Experiment:
             else:
                 no_improve_count += 1
 
-            if self.earlystop_patience>0 and no_improve_count>=self.earlystop_patience:
+            if self.earlystop_patience > 0 and no_improve_count >= self.earlystop_patience:
                 self.log_func(f"[EarlyStopping triggered at epoch {ep+1}]")
                 break
 
@@ -244,12 +234,14 @@ class Experiment:
         best_batch_acc = 0.0
 
         if self.model_variant == "double":
-            # Basic example: we train only the binary head. Or you can do more advanced.
-            # TODO: properly train both heads if you prefer.
+            # e.g. only training the binary head for demonstration:
             for (images, labels) in self.train_loader:
                 images = images.to(self.device)
-                # Convert 4-class label into binary => 0 if label=notumor, else 1
-                bin_labels = torch.where(labels==0, torch.tensor(0, device=self.device), torch.tensor(1, device=self.device))
+
+                # Convert 4-class label => 0 if label=0 (NoTumor), else 1 for Tumor classes
+                bin_labels = torch.where(labels == 0,
+                                         torch.tensor(0, device=self.device),
+                                         torch.tensor(1, device=self.device))
 
                 self.optimizer.zero_grad()
                 out_bin = self.model(images, mode='binary')
@@ -268,6 +260,7 @@ class Experiment:
                     best_batch_acc = batch_acc
 
         else:
+            # single-head (binary/multi/simple) => normal cross-entropy path.
             for (images, labels) in self.train_loader:
                 images = images.to(self.device)
                 labels = labels.to(self.device)
@@ -293,15 +286,21 @@ class Experiment:
         return epoch_loss, epoch_acc, best_batch_acc
 
     def _evaluate(self):
+        """
+        Evaluate on self.val_loader. Builds a confusion matrix, calculates accuracy,
+        also can store ROC if binary/double.
+        """
         self.model.eval()
         total_correct = 0
         total_samples = 0
 
+        # Decide confusion matrix size:
         if self.model_variant == "binary":
             confmat_dim = 2
-        elif self.model_variant == "multi":
+        elif self.model_variant in ["multi", "simple"]:
             confmat_dim = self.num_classes
-        else:  # double => we do binary head for val
+        else:
+            # double => we'll evaluate the binary head only in this example => 2×2 confmat
             confmat_dim = 2
 
         confmat = torch.zeros(confmat_dim, confmat_dim, dtype=torch.int32, device=self.device)
@@ -313,8 +312,10 @@ class Experiment:
                 images = images.to(self.device)
 
                 if self.model_variant == "double":
-                    # Evaluate only binary head
-                    bin_labels = torch.where(labels==0, torch.tensor(0, device=self.device), torch.tensor(1, device=self.device))
+                    # Evaluate only the binary head at val-time:
+                    bin_labels = torch.where(labels == 0,
+                                             torch.tensor(0, device=self.device),
+                                             torch.tensor(1, device=self.device))
                     out_bin = self.model(images, mode='binary')
                     probs_bin = nn.functional.softmax(out_bin, dim=1)
                     _, bin_preds = torch.max(out_bin, 1)
@@ -326,10 +327,12 @@ class Experiment:
                     for t, p in zip(bin_labels, bin_preds):
                         confmat[t, p] += 1
 
+                    # For ROC:
                     all_labels.extend(bin_labels.cpu().numpy().tolist())
                     all_scores.extend(probs_bin[:,1].cpu().numpy().tolist())
 
                 else:
+                    # single-head => output dimension is #classes (2,3,4...)
                     labels = labels.to(self.device)
                     outputs = self.model(images)
                     probs = nn.functional.softmax(outputs, dim=1)
@@ -339,30 +342,24 @@ class Experiment:
                     total_correct += batch_correct
                     total_samples += labels.size(0)
 
+                    # increment confmat counts:
                     for t, p in zip(labels, preds):
                         confmat[t, p] += 1
 
+                    # If binary, record for ROC:
                     if self.model_variant == "binary":
-                        # Save for ROC
                         all_labels.extend(labels.cpu().numpy().tolist())
                         all_scores.extend(probs[:,1].cpu().numpy().tolist())
 
         accuracy = 100.0 * total_correct / total_samples if total_samples else 0.0
 
-        # class-wise accuracy
-        class_acc = {}
-        for c in range(confmat_dim):
-            row_sum = confmat[c,:].sum().item()
-            correct = confmat[c,c].item()
-            class_acc[c] = 100.0 * correct / row_sum if row_sum>0 else 0.0
-
         metrics = {
             "accuracy": accuracy,
-            "confusion_matrix": confmat,
-            "class_accuracy": class_acc
+            "confusion_matrix": confmat
         }
-        if (self.model_variant in ["binary","double"]) and _HAS_SKLEARN:
-            from sklearn.metrics import roc_curve, roc_auc_score
+
+        # If binary/double => we can compute ROC if sklearn is installed:
+        if (self.model_variant in ["binary", "double"]) and _HAS_SKLEARN:
             try:
                 fpr, tpr, _ = roc_curve(all_labels, all_scores)
                 auc_val = roc_auc_score(all_labels, all_scores)
@@ -407,7 +404,7 @@ class Experiment:
 
         total_tp = np.trace(confmat)
         total_sum = confmat.sum()
-        micro_f1 = (total_tp/total_sum) if total_sum>0 else 0.0
+        micro_f1 = total_tp/total_sum if total_sum>0 else 0.0
         macro_f1 = float(np.mean(f1_vals))
 
         return {
@@ -419,7 +416,14 @@ class Experiment:
             "macro_f1": macro_f1
         }
 
+    # ------------------------------------------------------------------
+    # K-Fold cross-validation
+    # ------------------------------------------------------------------
     def run_kfold(self, folds=5, epochs=5, progress_cb=None):
+        """
+        If folds>1, we only loaded the 'Training' set as self.train_dataset.
+        We'll do K-Fold on that. Summation approach for confmat.
+        """
         if not hasattr(self, 'train_dataset'):
             raise ValueError("Call load_data() first with folds>1")
 
@@ -438,9 +442,9 @@ class Experiment:
         for fold_idx, (train_idx, val_idx) in enumerate(kf.split(idx_arr)):
             self.log_func(f"\n--- Fold {fold_idx+1}/{folds} ---")
 
-            # Re-init model
-            if self.model_variant in ["transfer","custom"]:
-                raise NotImplementedError(f"{self.model_variant} => TODO advanced model")
+            # Re-init model each fold
+            if self.model_variant in ["transfer", "custom"]:
+                raise NotImplementedError(f"{self.model_variant} => advanced model not implemented.")
 
             self.model, _ = get_model(
                 model_variant=self.model_variant,
@@ -465,27 +469,31 @@ class Experiment:
                 tr_loss, tr_acc, _ = self._train_one_epoch_fold(fold_train_loader)
                 val_metrics = self._evaluate_fold(fold_val_loader)
                 val_acc = val_metrics["accuracy"]
+
                 local_train_accs.append(tr_acc)
                 local_val_accs.append(val_acc)
 
-                msg = f"[Fold {fold_idx+1} Ep {ep+1}/{epochs}] TrainAcc={tr_acc:.2f}% | ValAcc={val_acc:.2f}%"
+                msg = f"[Fold {fold_idx+1}, Ep {ep+1}/{epochs}] TrainAcc={tr_acc:.1f}%, ValAcc={val_acc:.1f}%"
                 self.log_func(msg)
 
                 if val_acc > best_val_acc:
                     best_val_acc = val_acc
                     no_improve_count = 0
+                    # store best stats:
                     self.final_roc = self._extract_roc_data(val_metrics)
                     best_confmat = val_metrics["confusion_matrix"]
                     best_metrics = self._compute_class_metrics(val_metrics)
                 else:
                     no_improve_count += 1
 
+                # Optional early stop per fold:
                 if self.earlystop_patience>0 and no_improve_count>=self.earlystop_patience:
                     self.log_func(f"[EarlyStop fold {fold_idx+1} at ep {ep+1}]")
                     break
 
             total_acc += best_val_acc
 
+            # accumulate confmat & metrics across folds:
             if accum_confmat is None:
                 accum_confmat = best_confmat.clone()
             else:
@@ -502,26 +510,28 @@ class Experiment:
             train_accs_over_folds.append(local_train_accs)
             val_accs_over_folds.append(local_val_accs)
 
+        # average across folds:
         avg_acc = total_acc / folds
+
         final_metrics = {}
         for k, arr_val in sum_metrics.items():
-            if isinstance(arr_val, np.ndarray):
-                final_metrics[k] = (arr_val / folds).tolist()
-            else:
-                final_metrics[k] = arr_val / folds
+            final_metrics[k] = (arr_val / folds).tolist()
 
         self.final_confmat = accum_confmat
+
         final_val_metrics = {
             "confusion_matrix": accum_confmat,
             "accuracy": avg_acc
         }
-        extra_metrics = self._compute_class_metrics(final_val_metrics)
-        for kk, vv in extra_metrics.items():
-            final_metrics[kk] = vv if not isinstance(vv, list) else vv
+        # also compute standard micro/macro f1 from that final confmat:
+        extra = self._compute_class_metrics(final_val_metrics)
+        for kk, vv in extra.items():
+            final_metrics[kk] = vv
 
         return avg_acc, accum_confmat, final_metrics, (train_accs_over_folds, val_accs_over_folds)
 
     def _train_one_epoch_fold(self, loader):
+        """Helper for run_kfold(). Identical to _train_one_epoch but uses a custom loader."""
         self.model.train()
         total_correct = 0
         total_samples = 0
@@ -529,10 +539,11 @@ class Experiment:
         best_batch_acc = 0.0
 
         if self.model_variant == "double":
-            # placeholder training for bin head
             for (images, labels) in loader:
                 images = images.to(self.device)
-                bin_labels = torch.where(labels==0, torch.tensor(0, device=self.device), torch.tensor(1, device=self.device))
+                bin_labels = torch.where(labels == 0,
+                                         torch.tensor(0, device=self.device),
+                                         torch.tensor(1, device=self.device))
 
                 self.optimizer.zero_grad()
                 out_bin = self.model(images, mode='binary')
@@ -545,7 +556,9 @@ class Experiment:
                 batch_correct = (bin_preds == bin_labels).sum().item()
                 total_correct += batch_correct
                 total_samples += labels.size(0)
+
         else:
+            # single-head
             for (images, labels) in loader:
                 images = images.to(self.device)
                 labels = labels.to(self.device)
@@ -558,24 +571,28 @@ class Experiment:
 
                 total_loss += float(loss) * images.size(0)
                 _, preds = torch.max(outputs, 1)
-                total_correct += (preds==labels).sum().item()
+                total_correct += (preds == labels).sum().item()
                 total_samples += labels.size(0)
 
-        epoch_loss = (total_loss / total_samples) if total_samples else 0.0
+        epoch_loss = total_loss / total_samples if total_samples else 0.0
         epoch_acc = 100.0 * total_correct / total_samples if total_samples else 0.0
         return epoch_loss, epoch_acc, best_batch_acc
 
     def _evaluate_fold(self, loader):
+        """
+        Evaluate on a fold-specific loader. Summarize with a confusion matrix, accuracy.
+        If binary/double => also store ROC data.
+        """
         self.model.eval()
         total_correct = 0
         total_samples = 0
 
         if self.model_variant == "binary":
             confmat_dim = 2
-        elif self.model_variant == "multi":
+        elif self.model_variant in ["multi","simple"]:
             confmat_dim = self.num_classes
         else:
-            confmat_dim = 2
+            confmat_dim = 2  # "double"
 
         confmat = torch.zeros(confmat_dim, confmat_dim, dtype=torch.int32, device=self.device)
         all_labels = []
@@ -586,17 +603,22 @@ class Experiment:
                 images = images.to(self.device)
 
                 if self.model_variant == "double":
-                    bin_labels = torch.where(labels==0, torch.tensor(0, device=self.device), torch.tensor(1, device=self.device))
+                    bin_labels = torch.where(labels == 0,
+                                             torch.tensor(0, device=self.device),
+                                             torch.tensor(1, device=self.device))
                     out_bin = self.model(images, mode='binary')
                     probs_bin = nn.functional.softmax(out_bin, dim=1)
                     _, bin_preds = torch.max(out_bin, 1)
 
-                    total_correct += (bin_preds==bin_labels).sum().item()
+                    batch_correct = (bin_preds == bin_labels).sum().item()
+                    total_correct += batch_correct
                     total_samples += labels.size(0)
 
+                    # confmat
                     for t, p in zip(bin_labels, bin_preds):
                         confmat[t,p] += 1
 
+                    # for ROC:
                     all_labels.extend(bin_labels.cpu().numpy().tolist())
                     all_scores.extend(probs_bin[:,1].cpu().numpy().tolist())
 
@@ -605,23 +627,25 @@ class Experiment:
                     outputs = self.model(images)
                     probs = nn.functional.softmax(outputs, dim=1)
                     _, preds = torch.max(outputs, 1)
-                    total_correct += (preds==labels).sum().item()
+
+                    batch_correct = (preds == labels).sum().item()
+                    total_correct += batch_correct
                     total_samples += labels.size(0)
 
                     for t, p in zip(labels, preds):
-                        confmat[t,p] += 1
+                        confmat[t, p] += 1
 
                     if self.model_variant == "binary":
                         all_labels.extend(labels.cpu().numpy().tolist())
                         all_scores.extend(probs[:,1].cpu().numpy().tolist())
 
         accuracy = 100.0 * total_correct / total_samples if total_samples else 0.0
+
         metrics = {
             "accuracy": accuracy,
             "confusion_matrix": confmat
         }
         if (self.model_variant in ["binary","double"]) and _HAS_SKLEARN:
-            from sklearn.metrics import roc_curve, roc_auc_score
             try:
                 fpr, tpr, _ = roc_curve(all_labels, all_scores)
                 auc_val = roc_auc_score(all_labels, all_scores)
