@@ -45,15 +45,15 @@ class BrainTumorDataset(Dataset):
             self._gather_binary()
 
         elif self.model_variant == "threeclass":
-            # 3-class => Pituitary=0, Meningioma=1, Glioma=2
-            # note: we skip or ignore "NoTumor" subfolder entirely
-            label_map = {
-                "pituitary": 0,
-                "meningioma": 1,
-                "glioma": 2
-            }
-            self.classes = ["Pituitary", "Meningioma", "Glioma"]
-            self._gather_subfolders(label_map)
+                # 3-class => Pituitary=0, Meningioma=1, Glioma=2
+                label_map = {
+                    "pituitary": 0,
+                    "meningioma": 1,
+                    "glioma": 2
+                }
+                # So classes must match label_map order:
+                self.classes = ["Pituitary", "Meningioma", "Glioma"]
+                self._gather_subfolders(label_map)
 
         elif self.model_variant == "double":
             # For the double-headed net, we still store them as 0..3:
@@ -65,7 +65,7 @@ class BrainTumorDataset(Dataset):
                 "meningioma": 2,
                 "glioma": 3
             }
-            self.classes = ["notumor", "pituitary", "meningioma", "glioma"]
+            self.classes = ["NoTumor", "Pituitary", "Meningioma", "Glioma"]
             self._gather_subfolders(label_map)
 
         else:

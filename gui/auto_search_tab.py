@@ -1,74 +1,67 @@
+"""
+auto_search_tab.py
+
+Updated HPC search that removes the old "disable_aug" and "adv_aug" parameters,
+removes any references to "resize", and also removes "double" from the HPC model variants
+so we don't train it. We only keep 'binary', 'simple', 'threeclass'.
+Includes a set of checkboxes for model variants, plus typical HPC space
+(dropout, weight_decay, earlystop, class_weight).
+Everything else (progress display, final training, HPC info) is the same.
+"""
+
 import os
-import ast
-import itertools
-import torch
+import json
 import random
 import copy
-import json  # <-- for saving/loading HPC combos
+import torch
+import numpy as np
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QScrollArea, QGroupBox, QFormLayout,
     QLabel, QPushButton, QComboBox, QLineEdit, QSpinBox,
     QProgressBar, QTextEdit, QMessageBox, QHBoxLayout, QTableWidget,
-    QTableWidgetItem, QHeaderView, QFileDialog
+    QTableWidgetItem, QHeaderView, QFileDialog, QCheckBox
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal  # <-- ADDED: pyqtSignal for HPC updates
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from gui.widgets import MplCanvas
 
 from src.experiment import Experiment
-import numpy as np
 
-########################################################################
-## JSON Persistence for HPC combos
-########################################################################
 _HPC_RESULTS_JSON = "hpc_results.json"
+
 
 def save_hpc_results_json(all_results, path=_HPC_RESULTS_JSON):
     """
-    Save HPC combos (including confmat/ROC/metrics) to a JSON file so they persist across sessions.
-
-    Each item is structured like:
-      {
-        "combo_str": "...",
-        "val_acc":  88.7,
-        "model_path": "hpc_checkpoints/hpc_model_combo_1.pth",
-        "model_variant": "binary",
-        "confmat_list": [[12, 1],[2, 14]],
-        "roc": {"fpr": [...], "tpr": [...], "auc": 0.94},
-        "metrics": {...}
-      }
-
-    We convert any PyTorch tensor or NumPy arrays to Python lists to avoid
-    “Object of type ndarray is not JSON serializable” errors.
+    Saves HPC combos (confmat/ROC/metrics) to a JSON file so they persist across sessions.
     """
+    import json
     data_to_save = []
-
     for rec in all_results:
-        # Convert confusion matrix tensor to list-of-lists if present
+        # Convert confusion matrix, if any
         confmat_tensor = rec.get("confmat", None)
         if isinstance(confmat_tensor, torch.Tensor):
             cmat_list = confmat_tensor.cpu().tolist()
         else:
             cmat_list = None
 
-        # Convert ROC fpr/tpr from NumPy arrays to lists if needed
+        # Convert any ROC arrays to lists
         roc_obj = rec.get("roc", None)
-        if roc_obj is not None:
-            fpr = roc_obj.get("fpr")
-            tpr = roc_obj.get("tpr")
-            # Convert to lists if they are NumPy arrays
+        if roc_obj:
+            fpr = roc_obj.get("fpr", [])
+            tpr = roc_obj.get("tpr", [])
             if isinstance(fpr, np.ndarray):
                 fpr = fpr.tolist()
             if isinstance(tpr, np.ndarray):
                 tpr = tpr.tolist()
-            # rebuild the dict
             roc_obj = {
                 "fpr": fpr,
                 "tpr": tpr,
                 "auc": roc_obj.get("auc", None)
             }
+        else:
+            roc_obj = None
 
         data_to_save.append({
             "combo_str":     rec.get("combo_str", ""),
@@ -88,42 +81,20 @@ def save_hpc_results_json(all_results, path=_HPC_RESULTS_JSON):
 
 
 def load_hpc_results_json(path=_HPC_RESULTS_JSON):
-    """
-    Load HPC combos from JSON, converting any confmat_list back to a torch Tensor.
-
-    Return structure:
-      [
-        {
-          "combo_str": "...",
-          "val_acc": ...,
-          "model_path": "...",
-          "model_variant": "...",
-          "confmat": <torch.IntTensor or None>,
-          "roc": {...},
-          "metrics": {...}
-        }, ...
-      ]
-
-    If the file is empty or invalid JSON, we return an empty list.
-    """
     if not os.path.isfile(path):
         return []
-
-    # If file is empty, also return []
     if os.path.getsize(path) == 0:
-        print(f"[WARN] {path} is empty. Returning no HPC combos.")
+        print(f"[WARN] {path} is empty. Return no HPC combos.")
         return []
-
     try:
         with open(path, "r", encoding="utf-8") as f:
             content = f.read().strip()
             if not content:
-                print(f"[WARN] {path} is empty (or whitespace). Returning no HPC combos.")
+                print(f"[WARN] {path} is empty (or whitespace). Return no HPC combos.")
                 return []
-            # Now parse
             data = json.loads(content)
     except Exception as e:
-        print(f"[WARN] Could not load HPC results from {path}: {e}")
+        print(f"[WARN] Could not load HPC combos from {path}: {e}")
         return []
 
     results = []
@@ -146,26 +117,20 @@ def load_hpc_results_json(path=_HPC_RESULTS_JSON):
     return results
 
 
-########################################################################
-## HPCSearchWorker
-########################################################################
 class HPCSearchWorker(QThread):
     """
-    Conduct HPC with partial training for each combo.
+    Conduct HPC with partial training for each combo (no "double" variant).
     We store best val_acc, confmat, ROC, metrics, plus the saved model path.
     """
     progress = pyqtSignal(int)
     log_msg = pyqtSignal(str)
-    combo_epoch_update = pyqtSignal(int, int, float, float)
+    combo_epoch_update = pyqtSignal(int, int, float, float)  # combo_idx, epoch, train_acc, val_acc
     finished = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.data_root = "cleaned_data"
         self.model_variants = []
-        self.resize_list = []
-        self.disable_aug_list = []
-        self.adv_aug_list = []
         self.dropout_list = []
         self.weight_decay_list = []
         self.earlystop_list = []
@@ -183,9 +148,6 @@ class HPCSearchWorker(QThread):
         self,
         data_root,
         model_variants,
-        resize_list,
-        disable_aug_list,
-        adv_aug_list,
         dropout_list,
         weight_decay_list,
         earlystop_list,
@@ -196,10 +158,7 @@ class HPCSearchWorker(QThread):
         device="cpu"
     ):
         self.data_root = data_root
-        self.model_variants = model_variants
-        self.resize_list = resize_list
-        self.disable_aug_list = disable_aug_list
-        self.adv_aug_list = adv_aug_list
+        self.model_variants = model_variants  # e.g. ["binary","simple","threeclass"] (no double)
         self.dropout_list = dropout_list
         self.weight_decay_list = weight_decay_list
         self.earlystop_list = earlystop_list
@@ -215,12 +174,8 @@ class HPCSearchWorker(QThread):
 
     def run(self):
         import itertools
-
         param_space = list(itertools.product(
             self.model_variants,
-            self.resize_list,
-            self.disable_aug_list,
-            self.adv_aug_list,
             self.dropout_list,
             self.weight_decay_list,
             self.earlystop_list,
@@ -232,25 +187,21 @@ class HPCSearchWorker(QThread):
             self.finished.emit()
             return
 
-        self.log_msg.emit(f"Starting HPC with {total_combos} combos, each ~{self.mini_epochs} epochs...")
+        self.log_msg.emit(f"Starting HPC with {total_combos} combos, each ~{self.mini_epochs} epoch(s)...")
 
         os.makedirs("hpc_checkpoints", exist_ok=True)
-
         from src.experiment import Experiment
 
         for combo_idx, combo in enumerate(param_space):
             model_var   = combo[0]
-            resize_val  = combo[1]
-            dis_aug     = combo[2]
-            adv_aug     = combo[3]
-            drop        = combo[4]
-            wdec        = combo[5]
-            estop       = combo[6]
-            cw          = combo[7]
+            drop        = combo[1]
+            wdec        = combo[2]
+            estop       = combo[3]
+            cw          = combo[4]
 
             combo_str = (
-                f"model={model_var}, resize={resize_val}, disAug={dis_aug}, "
-                f"advAug={adv_aug}, drop={drop}, wdec={wdec}, eStop={estop}, cw={cw}"
+                f"model={model_var}, drop={drop}, "
+                f"wdec={wdec}, eStop={estop}, cw={cw}"
             )
             self.log_msg.emit(f"\n[Combo {combo_idx+1}/{total_combos}] => {combo_str}")
 
@@ -258,12 +209,12 @@ class HPCSearchWorker(QThread):
                 exp = Experiment(
                     data_root=self.data_root,
                     model_variant=model_var,
-                    input_size=resize_val,
+                    input_size=128,
                     batch_size=self.batch_size,
                     lr=self.lr,
                     epochs=self.mini_epochs,
-                    disable_augment=dis_aug,
-                    adv_aug=adv_aug,
+                    disable_augment=True,
+                    adv_aug=False,
                     dropout=drop,
                     weight_decay=wdec,
                     earlystop_patience=estop,
@@ -313,8 +264,8 @@ class HPCSearchWorker(QThread):
 
                 if val_acc > best_val_for_combo:
                     best_val_for_combo = val_acc
+                    import copy
                     best_state_dict = copy.deepcopy(exp.model.state_dict())
-
                     best_confmat = val_metrics.get("confusion_matrix")
                     best_roc = {
                         "fpr": val_metrics.get("roc_fpr"),
@@ -332,7 +283,6 @@ class HPCSearchWorker(QThread):
                 self.combo_epoch_update.emit(combo_idx, ep+1, train_acc, val_acc)
                 self.log_msg.emit(f"  Ep {ep+1}/{self.mini_epochs}: train={train_acc:.1f}%, val={val_acc:.1f}%")
 
-            # -- Make sure the HPC model is saved if we found a "best_state_dict" --
             if best_state_dict is not None:
                 model_path = os.path.join("hpc_checkpoints", f"hpc_model_combo_{combo_idx+1}.pth")
                 torch.save(best_state_dict, model_path)
@@ -345,7 +295,7 @@ class HPCSearchWorker(QThread):
                 "confmat": best_confmat,
                 "roc": best_roc,
                 "metrics": best_metrics,
-                "model_path": model_path,   # store the .pth path
+                "model_path": model_path,
                 "model_variant": model_var
             })
 
@@ -360,12 +310,9 @@ class HPCSearchWorker(QThread):
         self.finished.emit()
 
 
-########################################################################
-## FinalTrainWorker
-########################################################################
 class FinalTrainWorker(QThread):
     """
-    Perform final training on the best HPC combo.
+    Performs final training on the best HPC combo.
     """
     finishedDetailed = pyqtSignal(float, dict, object, dict)
     progress = pyqtSignal(int)
@@ -382,16 +329,7 @@ class FinalTrainWorker(QThread):
         self.folds = 1
         self.device = "cpu"
 
-    def setup_final(
-        self,
-        best_params_str,
-        data_root,
-        epochs,
-        batch,
-        lr,
-        folds,
-        device="cpu"
-    ):
+    def setup_final(self, best_params_str, data_root, epochs, batch, lr, folds, device="cpu"):
         self.best_params_str = best_params_str
         self.data_root = data_root
         self.epochs = epochs
@@ -402,10 +340,11 @@ class FinalTrainWorker(QThread):
 
     def run(self):
         if not self.best_params_str:
-            self.log_msg.emit("No HPC combo was chosen for final training.")
+            self.log_msg.emit("No HPC combo chosen for final training.")
             self.finishedDetailed.emit(0.0, {}, None, {})
             return
 
+        # parse param string, e.g. "model=..., drop=..., wdec=..., eStop=..., cw=..."
         parts = self.best_params_str.split(",")
         param_dict = {}
         for p in parts:
@@ -415,10 +354,7 @@ class FinalTrainWorker(QThread):
                     k, v = kv
                     param_dict[k.strip()] = v.strip()
 
-        model_var  = param_dict.get("model", "binary")
-        resize_val = int(param_dict.get("resize", "128"))
-        dis_aug    = (param_dict.get("disAug", "False") == "True")
-        adv_aug    = (param_dict.get("advAug", "False") == "True")
+        model_var = param_dict.get("model", "binary")
         drop       = float(param_dict.get("drop", "0.0"))
         wdec       = float(param_dict.get("wdec", "0.0"))
         estop      = int(param_dict.get("eStop", "0"))
@@ -427,18 +363,16 @@ class FinalTrainWorker(QThread):
         self.log_msg.emit(f"[Final Training] Using => {self.best_params_str}")
         self.log_msg.emit(f"Folds={self.folds}, epochs={self.epochs}, batch={self.batch}, lr={self.lr}")
 
-        from src.experiment import Experiment
-
         try:
             exp = Experiment(
                 data_root=self.data_root,
                 model_variant=model_var,
-                input_size=resize_val,
+                input_size=128,
                 batch_size=self.batch,
                 lr=self.lr,
                 epochs=self.epochs,
-                disable_augment=dis_aug,
-                adv_aug=adv_aug,
+                disable_augment=True,
+                adv_aug=False,
                 dropout=drop,
                 weight_decay=wdec,
                 earlystop_patience=estop,
@@ -448,14 +382,14 @@ class FinalTrainWorker(QThread):
             )
             exp.set_logger(self.log_msg.emit)
         except Exception as e:
-            self.log_msg.emit(f"Failed to build final Experiment: {e}")
+            self.log_msg.emit(f"Failed building final experiment: {e}")
             self.progress.emit(0)
             self.finishedDetailed.emit(0.0, {}, None, {})
             return
 
         exp.load_data()
         if hasattr(exp, "train_dataset") and getattr(exp.train_dataset, "is_empty", False):
-            self.log_msg.emit("No images in train dataset => abort.")
+            self.log_msg.emit("Train dataset is empty => abort.")
             self.finishedDetailed.emit(0.0, {}, None, {})
             return
 
@@ -498,32 +432,20 @@ class FinalTrainWorker(QThread):
         final_roc = exp.final_roc
         final_confmat = exp.final_confmat
         final_metrics = exp.final_class_metrics
-
         self.finishedDetailed.emit(final_acc, final_roc, final_confmat, final_metrics)
 
 
-########################################################################
-## AutoSearchTab
-########################################################################
 class AutoSearchTab(QWidget):
     """
-    HPC search that does partial training with confmat/ROC/metrics,
-    also final training of best HPC combo, storing confusion matrix & ROC,
-    and persisting HPC combos to JSON so they can be reloaded at app start.
-
-    Now includes a second bar chart for ROC AUC (0 if not available).
-    Also sets bigger minimum sizes for the bottom charts.
+    HPC search for (binary, simple, threeclass) but NOT double,
+    plus final training of the best combo, storing confusion matrix & ROC.
     """
 
-    # ------------------------------------------------------------------
-    # ADDED SIGNAL: let others know HPC combos changed
-    # ------------------------------------------------------------------
     hpc_updated = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        # Overall style
         self.setStyleSheet("""
             QWidget#AutoSearchTab {
                 background-color: #f9f9f9;
@@ -570,8 +492,6 @@ class AutoSearchTab(QWidget):
         self.setObjectName("AutoSearchTab")
 
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0,0,0,0)
-        main_layout.setSpacing(0)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -580,46 +500,56 @@ class AutoSearchTab(QWidget):
         cont_layout.setContentsMargins(15,15,15,15)
         cont_layout.setSpacing(20)
 
-        # HPC config group
         hpc_group = QGroupBox("Hyperparameter Search (HPC)")
         hpc_form = QFormLayout(hpc_group)
-        hpc_form.setSpacing(8)
 
+        # Dataset folder
         self.dataset_combo = QComboBox()
-        self.dataset_combo.addItems(["data/archive", "cleaned_data", "augmented_data"])
-        hpc_form.addRow("Dataset:", self.dataset_combo)
+        self.dataset_combo.addItems(["cleaned_data", "unprocessed_data", "augmented_data"])
+        hpc_form.addRow("Dataset Folder:", self.dataset_combo)
 
-        self.model_edit = QLineEdit("binary,multi,double,simple")
-        hpc_form.addRow("Model Variants:", self.model_edit)
+        # Model variants => checkboxes, but NO double.
+        self.model_ck_binary = QCheckBox("binary")
+        self.model_ck_simple  = QCheckBox("simple")
+        self.model_ck_threeclass = QCheckBox("threeclass")
 
-        self.resize_edit = QLineEdit("128,224")
-        self.disaug_edit = QLineEdit("False,True")
-        self.advaug_edit = QLineEdit("False")
-        hpc_form.addRow("Resize List:", self.resize_edit)
-        hpc_form.addRow("Disable Aug (List):", self.disaug_edit)
-        hpc_form.addRow("Adv Aug (List):", self.advaug_edit)
+        model_ck_layout = QHBoxLayout()
+        model_ck_layout.addWidget(self.model_ck_binary)
+        model_ck_layout.addWidget(self.model_ck_simple)
+        model_ck_layout.addWidget(self.model_ck_threeclass)
+        hpc_form.addRow(QLabel("Model Variants:"), model_ck_layout)
 
+        # Dropout
         self.dropout_edit = QLineEdit("0.0,0.3")
-        self.wdec_edit = QLineEdit("0.0,0.0001")
-        self.es_edit = QLineEdit("0,3")
-        self.cw_edit = QLineEdit("False,True")
         hpc_form.addRow("Dropout List:", self.dropout_edit)
-        hpc_form.addRow("Weight Decay List:", self.wdec_edit)
-        hpc_form.addRow("EarlyStop List:", self.es_edit)
-        hpc_form.addRow("Class Weight List:", self.cw_edit)
 
+        # Weight decay
+        self.wdec_edit = QLineEdit("0.0,0.0001")
+        hpc_form.addRow("Weight Decay List:", self.wdec_edit)
+
+        # Early stop
+        self.es_edit = QLineEdit("0,3")
+        hpc_form.addRow("EarlyStop List:", self.es_edit)
+
+        # Class Weight
+        self.cw_edit = QLineEdit("False,True")
+        hpc_form.addRow("Class Weight (List):", self.cw_edit)
+
+        # batch size
         self.batch_spin = QSpinBox()
         self.batch_spin.setRange(1,512)
         self.batch_spin.setValue(16)
         hpc_form.addRow("Batch Size:", self.batch_spin)
 
+        # LR
         self.lr_edit = QLineEdit("0.001")
         hpc_form.addRow("Learning Rate:", self.lr_edit)
 
+        # HPC mini-epochs
         self.mini_epoch_spin = QSpinBox()
         self.mini_epoch_spin.setRange(1,20)
         self.mini_epoch_spin.setValue(2)
-        hpc_form.addRow("Mini-Epochs:", self.mini_epoch_spin)
+        hpc_form.addRow("Mini-Epochs (partial):", self.mini_epoch_spin)
 
         self.btn_hpc = QPushButton("Run HPC Search")
         self.btn_hpc.clicked.connect(self.on_run_hpc)
@@ -627,52 +557,49 @@ class AutoSearchTab(QWidget):
 
         cont_layout.addWidget(hpc_group)
 
-        # HPC logs/progress
         self.hpc_progress = QProgressBar()
         self.hpc_progress.setValue(0)
-
-        # -- Increase the HPC log's minimum height so the output is taller --
         self.hpc_log = QTextEdit()
         self.hpc_log.setReadOnly(True)
-        self.hpc_log.setMinimumHeight(300)  # <-- CHANGED to 300 for more height
+        self.hpc_log.setMinimumHeight(180)
 
         cont_layout.addWidget(self.hpc_progress)
         cont_layout.addWidget(self.hpc_log)
 
-        # HPC chart for the current combo
         self.hpc_canvas = MplCanvas(self, width=8, height=4, dpi=100)
         self.hpc_canvas.setMinimumSize(800, 400)
         self.hpc_toolbar = NavigationToolbar(self.hpc_canvas, self)
+
         cont_layout.addWidget(QLabel("<b>Current HPC Combo: Train vs. Val Accuracy</b>"))
         cont_layout.addWidget(self.hpc_canvas)
         cont_layout.addWidget(self.hpc_toolbar)
 
-        # HPC results
         results_group = QGroupBox("HPC Results Overview")
         rg_layout = QVBoxLayout(results_group)
+
         self.hpc_table = QTableWidget()
         self.hpc_table.setColumnCount(4)
         self.hpc_table.setHorizontalHeaderLabels(["Rank","Combo","Val Acc","Model?"])
         self.hpc_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.hpc_table.setMinimumHeight(220)
+        self.hpc_table.setMinimumHeight(180)
         rg_layout.addWidget(self.hpc_table)
 
-        btn_row = QHBoxLayout()
-        self.btn_show_info = QPushButton("Show HPC Info Card (Selected)")
+        h_btn_row = QHBoxLayout()
+        self.btn_show_info = QPushButton("Show HPC Info (Selected)")
         self.btn_show_info.clicked.connect(self.on_show_hpc_info)
-        btn_row.addWidget(self.btn_show_info)
+        h_btn_row.addWidget(self.btn_show_info)
 
         self.btn_delete_model = QPushButton("Delete HPC Model (Selected)")
         self.btn_delete_model.clicked.connect(self.on_delete_model)
-        btn_row.addWidget(self.btn_delete_model)
-        rg_layout.addLayout(btn_row)
+        h_btn_row.addWidget(self.btn_delete_model)
+
+        rg_layout.addLayout(h_btn_row)
 
         self.hpc_info_text = QTextEdit()
         self.hpc_info_text.setReadOnly(True)
-        self.hpc_info_text.setMinimumHeight(180)
+        self.hpc_info_text.setMinimumHeight(150)
         rg_layout.addWidget(self.hpc_info_text)
 
-        # HPC combos Bar Chart
         self.hpc_bar_canvas = MplCanvas(self, width=8, height=3, dpi=100)
         self.hpc_bar_canvas.setMinimumSize(800, 400)
         self.hpc_bar_toolbar = NavigationToolbar(self.hpc_bar_canvas, self)
@@ -680,7 +607,6 @@ class AutoSearchTab(QWidget):
         rg_layout.addWidget(self.hpc_bar_canvas)
         rg_layout.addWidget(self.hpc_bar_toolbar)
 
-        # HPC AUC Bar Chart
         self.hpc_auc_canvas = MplCanvas(self, width=8, height=3, dpi=100)
         self.hpc_auc_canvas.setMinimumSize(800, 400)
         self.hpc_auc_toolbar = NavigationToolbar(self.hpc_auc_canvas, self)
@@ -690,10 +616,8 @@ class AutoSearchTab(QWidget):
 
         cont_layout.addWidget(results_group)
 
-        # Final training
         final_box = QGroupBox("Final Training (Use HPC Combo)")
         final_form = QFormLayout(final_box)
-        final_form.setSpacing(8)
 
         self.final_epochs_spin = QSpinBox()
         self.final_epochs_spin.setRange(1,200)
@@ -720,7 +644,6 @@ class AutoSearchTab(QWidget):
 
         cont_layout.addWidget(final_box)
 
-        # final logs
         self.final_progress = QProgressBar()
         self.final_progress.setValue(0)
         self.final_log = QTextEdit()
@@ -729,7 +652,6 @@ class AutoSearchTab(QWidget):
         cont_layout.addWidget(self.final_progress)
         cont_layout.addWidget(self.final_log)
 
-        # final chart
         self.final_canvas = MplCanvas(container, width=8, height=4)
         self.final_canvas.setMinimumSize(800, 400)
         self.final_toolbar = NavigationToolbar(self.final_canvas, self)
@@ -737,11 +659,9 @@ class AutoSearchTab(QWidget):
         cont_layout.addWidget(self.final_canvas)
         cont_layout.addWidget(self.final_toolbar)
 
-        # final confmat+roc
         final_res_g = QGroupBox("Final Results: Confusion Matrix & ROC")
         fres_layout = QHBoxLayout(final_res_g)
 
-        # confmat
         self.confmat_canvas = MplCanvas(self, width=4, height=3)
         self.confmat_canvas.setMinimumSize(400, 300)
         self.confmat_toolbar = NavigationToolbar(self.confmat_canvas, self)
@@ -751,9 +671,8 @@ class AutoSearchTab(QWidget):
         v_left.addWidget(self.confmat_toolbar)
         fres_layout.addLayout(v_left)
 
-        # roc
         self.roc_canvas = MplCanvas(self, width=4, height=3)
-        self.roc_canvas.setMinimumSize(800,400)
+        self.roc_canvas.setMinimumSize(400, 300)
         self.roc_toolbar = NavigationToolbar(self.roc_canvas, self)
         v_right = QVBoxLayout()
         v_right.addWidget(QLabel("<b>ROC Curve (Binary/Double)</b>"))
@@ -761,7 +680,6 @@ class AutoSearchTab(QWidget):
         v_right.addWidget(self.roc_toolbar)
         fres_layout.addLayout(v_right)
 
-        # metrics text
         self.metrics_text = QTextEdit()
         self.metrics_text.setReadOnly(True)
         fres_layout.addWidget(self.metrics_text)
@@ -773,11 +691,11 @@ class AutoSearchTab(QWidget):
         self.setLayout(main_layout)
 
         self.hpc_worker = None
-        self.all_results = []
         self.current_combo_idx = -1
         self.hpc_train_acc = []
         self.hpc_val_acc = []
         self.best_params_str = ""
+        self.all_results = []
 
         self.final_worker = None
         self.final_epoch_list = []
@@ -787,25 +705,22 @@ class AutoSearchTab(QWidget):
         self.final_confmat_data = None
         self.final_metrics_data = None
 
-        # Load any existing HPC combos from JSON
+        # load existing HPC combos from JSON
         self._load_existing_hpc_results()
 
-    ########################################################################
-    ## LOAD/SAVE HPC combos from JSON
-    ########################################################################
     def _load_existing_hpc_results(self):
         loaded = load_hpc_results_json()
         if loaded:
             self.all_results = []
             for item in loaded:
                 rec = {
-                    "combo_str":     item.get("combo_str", ""),
-                    "val_acc":       item.get("val_acc", 0.0),
-                    "model_path":    item.get("model_path", ""),
-                    "model_variant": item.get("model_variant", ""),
-                    "metrics":       item.get("metrics", None),
-                    "roc":           item.get("roc", None),
-                    "confmat":       item.get("confmat", None)
+                    "combo_str":     item.get("combo_str",""),
+                    "val_acc":       item.get("val_acc",0.0),
+                    "model_path":    item.get("model_path",""),
+                    "model_variant": item.get("model_variant",""),
+                    "metrics":       item.get("metrics",None),
+                    "roc":           item.get("roc",None),
+                    "confmat":       item.get("confmat",None)
                 }
                 self.all_results.append(rec)
 
@@ -813,22 +728,15 @@ class AutoSearchTab(QWidget):
             self._plot_hpc_combo_chart()
             self._plot_hpc_auc_chart()
 
-            # find best
-            if self.all_results:
-                best = max(self.all_results, key=lambda r: r["val_acc"])
+            best = max(self.all_results, key=lambda r: r["val_acc"], default=None)
+            if best:
                 self.best_params_str = best["combo_str"]
-                if self.best_params_str:
-                    self.btn_final.setEnabled(True)
                 self.hpc_log.append(f"Loaded HPC combos from JSON. Best => {self.best_params_str}")
+                self.btn_final.setEnabled(True)
 
     def _save_current_hpc_results(self):
-        # Convert "confmat" (tensor) to list-of-lists before saving if needed
-        # but we rely on the logic in save_hpc_results_json to do that automatically.
         save_hpc_results_json(self.all_results)
 
-    ########################################################################
-    ## HPC
-    ########################################################################
     def on_run_hpc(self):
         self.hpc_log.clear()
         self.hpc_progress.setValue(0)
@@ -837,38 +745,27 @@ class AutoSearchTab(QWidget):
         self.hpc_table.setRowCount(0)
         self.hpc_train_acc.clear()
         self.hpc_val_acc.clear()
+        self._plot_hpc_training_chart()
         self._plot_hpc_combo_chart()
         self._plot_hpc_auc_chart()
 
-        root_dir = self.dataset_combo.currentText().strip()
-        if not os.path.isdir(root_dir):
-            QMessageBox.warning(self, "Invalid Folder", f"'{root_dir}' is not valid.")
+        data_root = self.dataset_combo.currentText().strip()
+        if not os.path.isdir(data_root):
+            QMessageBox.warning(self, "Invalid Folder", f"'{data_root}' is not valid.")
             return
 
-        model_list = [m.strip() for m in self.model_edit.text().split(",") if m.strip()]
-        if not model_list:
-            QMessageBox.critical(self, "Input Error", "No valid model variants found.")
+        chosen_models = []
+        if self.model_ck_binary.isChecked():
+            chosen_models.append("binary")
+        if self.model_ck_simple.isChecked():
+            chosen_models.append("simple")
+        if self.model_ck_threeclass.isChecked():
+            chosen_models.append("threeclass")
+        if not chosen_models:
+            QMessageBox.warning(self, "No Models", "Please check at least one model variant.")
             return
 
-        def _parse_csv_bools(text: str):
-            res = []
-            for t in text.split(","):
-                t = t.strip().lower()
-                if t in ("true","1"):
-                    res.append(True)
-                elif t in ("false","0"):
-                    res.append(False)
-            return res
-
-        def _parse_csv_ints(text: str):
-            res = []
-            for t in text.split(","):
-                t = t.strip()
-                if t.isdigit() or (t.startswith('-') and t[1:].isdigit()):
-                    res.append(int(t))
-            return res
-
-        def _parse_csv_floats(text: str):
+        def parse_csv_floats(text):
             res = []
             for t in text.split(","):
                 t = t.strip()
@@ -879,24 +776,41 @@ class AutoSearchTab(QWidget):
                     pass
             return res
 
-        resize_list = _parse_csv_ints(self.resize_edit.text())
-        disaug_list = _parse_csv_bools(self.disaug_edit.text())
-        advaug_list = _parse_csv_bools(self.advaug_edit.text())
-        do_list = _parse_csv_floats(self.dropout_edit.text())
-        wdec_list = _parse_csv_floats(self.wdec_edit.text())
-        es_list = _parse_csv_ints(self.es_edit.text())
-        cw_list = _parse_csv_bools(self.cw_edit.text())
+        def parse_csv_ints(text):
+            res = []
+            for t in text.split(","):
+                t = t.strip()
+                try:
+                    val = int(t)
+                    res.append(val)
+                except:
+                    pass
+            return res
 
-        if (not resize_list or not disaug_list or not advaug_list
-            or not do_list or not wdec_list or not es_list or not cw_list):
-            QMessageBox.critical(self, "Input Error", "One or more HPC parameter lists are empty or invalid.")
+        def parse_csv_bools(text):
+            res = []
+            for t in text.split(","):
+                t = t.strip().lower()
+                if t in ("true","1"):
+                    res.append(True)
+                elif t in ("false","0"):
+                    res.append(False)
+            return res
+
+        dropout_list = parse_csv_floats(self.dropout_edit.text())
+        wdec_list = parse_csv_floats(self.wdec_edit.text())
+        es_list = parse_csv_ints(self.es_edit.text())
+        cw_list = parse_csv_bools(self.cw_edit.text())
+
+        if not (dropout_list and wdec_list and es_list and cw_list):
+            QMessageBox.critical(self, "Input Error", "One of the HPC lists is empty or invalid.")
             return
 
-        bs = self.batch_spin.value()
+        batch_size = self.batch_spin.value()
         try:
             lr = float(self.lr_edit.text().strip())
-        except ValueError:
-            QMessageBox.critical(self, "Input Error", "Learning rate must be a float.")
+        except:
+            QMessageBox.critical(self, "LR Error", "LR must be float.")
             return
 
         mep = self.mini_epoch_spin.value()
@@ -904,16 +818,13 @@ class AutoSearchTab(QWidget):
         from .auto_search_tab import HPCSearchWorker
         self.hpc_worker = HPCSearchWorker()
         self.hpc_worker.setup_hpc(
-            data_root=root_dir,
-            model_variants=model_list,
-            resize_list=resize_list,
-            disable_aug_list=disaug_list,
-            adv_aug_list=advaug_list,
-            dropout_list=do_list,
+            data_root=data_root,
+            model_variants=chosen_models,
+            dropout_list=dropout_list,
             weight_decay_list=wdec_list,
             earlystop_list=es_list,
             class_weight_list=cw_list,
-            batch_size=bs,
+            batch_size=batch_size,
             lr=lr,
             mini_epochs=mep,
             device="cuda" if torch.cuda.is_available() else "cpu"
@@ -945,7 +856,7 @@ class AutoSearchTab(QWidget):
     def _plot_hpc_training_chart(self):
         self.hpc_canvas.figure.clear()
         ax = self.hpc_canvas.figure.add_subplot(111)
-        ax.set_title("HPC Combo Training (Partial Run)")
+        ax.set_title("HPC Combo Training (Partial)")
         ax.set_xlabel("Epoch")
         ax.set_ylabel("Accuracy (%)")
         ax.grid(True)
@@ -959,7 +870,7 @@ class AutoSearchTab(QWidget):
         self.hpc_canvas.draw()
 
     def _on_hpc_finished(self):
-        self.hpc_log.append("\n=== HPC Finished ===")
+        self.hpc_log.append("=== HPC Finished ===")
         self.hpc_progress.setValue(100)
         self.btn_hpc.setEnabled(True)
 
@@ -968,29 +879,19 @@ class AutoSearchTab(QWidget):
             best_params_str = self.hpc_worker.best_params_str
             best_acc = self.hpc_worker.best_acc
 
-            # 1) Load old combos from JSON
             old_list = load_hpc_results_json()
-
-            # 2) Merge them
             combined = old_list + new_results
-
-            # 3) De-duplicate if needed
             deduped = []
             seen = set()
             for item in combined:
-                # build a unique key from (combo_str, model_path)
                 key = (item.get("combo_str",""), item.get("model_path",""))
                 if key not in seen:
                     seen.add(key)
                     deduped.append(item)
 
-            # 4) Now store final list in self.all_results
             self.all_results = deduped
-
-            # 5) Save them to JSON
             self._save_current_hpc_results()
 
-            # Update best HPC combo references
             self.best_params_str = best_params_str
             self.hpc_log.append(f"Best HPC => {best_params_str} (val_acc ~ {best_acc:.1f}%)")
 
@@ -998,9 +899,7 @@ class AutoSearchTab(QWidget):
             self._plot_hpc_combo_chart()
             self._plot_hpc_auc_chart()
 
-            # EMIT SIGNAL so InferenceTab can reload HPC combos
             self.hpc_updated.emit()
-
             if self.best_params_str:
                 self.btn_final.setEnabled(True)
 
@@ -1062,7 +961,7 @@ class AutoSearchTab(QWidget):
             colors = ["purple"] * len(auc_vals)
             colors[best_idx] = "orange"
             ax.bar(xvals, auc_vals, color=colors)
-            ax.set_title("HPC Combos ROC AUC (Binary/Double Only)")
+            ax.set_title("HPC Combos ROC AUC (Binary Only)")
             ax.set_xlabel("Combo Index")
             ax.set_ylabel("AUC")
             ax.set_xticks(xvals)
@@ -1072,25 +971,22 @@ class AutoSearchTab(QWidget):
         self.hpc_auc_canvas.figure.tight_layout()
         self.hpc_auc_canvas.draw()
 
-    ########################################################################
-    ## HPC Info Card
-    ########################################################################
     def on_show_hpc_info(self):
         row = self.hpc_table.currentRow()
         if row < 0:
-            self.hpc_info_text.setPlainText("No HPC result selected.")
+            self.hpc_info_text.setPlainText("No HPC row selected.")
             return
 
         combo_str = self.hpc_table.item(row, 1).text()
-        val_acc_str = self.hpc_table.item(row, 2).text()
+        val_acc_s = self.hpc_table.item(row, 2).text()
         try:
-            val_acc = float(val_acc_str)
-        except ValueError:
+            val_acc = float(val_acc_s)
+        except:
             val_acc = 0.0
 
         found = None
         for rec in self.all_results:
-            if rec["combo_str"] == combo_str and abs(rec["val_acc"] - val_acc) < 1e-4:
+            if rec["combo_str"] == combo_str and abs(rec["val_acc"]-val_acc) < 1e-4:
                 found = rec
                 break
 
@@ -1100,16 +996,16 @@ class AutoSearchTab(QWidget):
 
         cm_str = self._format_confmat(found["confmat"])
         roc_str = self._format_roc(found["roc"])
-        met_str = self._format_metrics(found["metrics"])
+        mets_str = self._format_metrics(found["metrics"])
 
         html = f"""
         <div style="border:2px solid #444;padding:10px;border-radius:6px;">
           <h3 style="margin-top:0;">HPC Info Card</h3>
           <p><b>Hyperparams:</b> {combo_str}</p>
-          <p><b>Val Accuracy (mini-run):</b> {val_acc:.2f}%</p>
+          <p><b>Val Accuracy:</b> {val_acc:.2f}%</p>
           <p><b>Confusion Matrix:</b><br>{cm_str}</p>
           <p><b>ROC Info:</b><br>{roc_str}</p>
-          <p><b>Class Metrics:</b><br>{met_str}</p>
+          <p><b>Class Metrics:</b><br>{mets_str}</p>
           <hr><em>Model file: {found['model_path'] if found['model_path'] else 'No checkpoint'}</em>
         </div>
         """
@@ -1118,16 +1014,16 @@ class AutoSearchTab(QWidget):
     def _format_confmat(self, confmat):
         if confmat is None:
             return "N/A"
-        arr = confmat.clone().cpu().numpy()
+        arr = confmat.cpu().numpy()
         rows = []
         for row in arr:
-            row_s = " ".join(f"{int(x):4d}" for x in row)
+            row_s = " ".join(f"{int(x):3d}" for x in row)
             rows.append(row_s)
         return f"<pre>{chr(10).join(rows)}</pre>"
 
     def _format_roc(self, roc_dict):
         if not roc_dict or roc_dict.get("fpr") is None:
-            return "Not available or not applicable."
+            return "N/A"
         auc_v = roc_dict.get("auc", None)
         if auc_v is None:
             return "AUC = N/A"
@@ -1137,35 +1033,30 @@ class AutoSearchTab(QWidget):
         if not metrics:
             return "N/A"
         lines = []
-        prec = metrics.get("precision", [])
-        rec = metrics.get("recall", [])
-        f1v = metrics.get("f1", [])
+        p = metrics.get("precision", [])
+        r = metrics.get("recall", [])
+        f1 = metrics.get("f1", [])
         sup = metrics.get("support", [])
-
-        for i in range(len(prec)):
-            lines.append(f"Class {i}: p={prec[i]:.3f}, r={rec[i]:.3f}, f1={f1v[i]:.3f}, sup={sup[i]}")
-        micro = metrics.get("micro_f1", None)
-        macro = metrics.get("macro_f1", None)
+        for i in range(len(p)):
+            lines.append(f"Class {i}: p={p[i]:.3f}, r={r[i]:.3f}, f1={f1[i]:.3f}, sup={sup[i]}")
+        micro = metrics.get("micro_f1",None)
+        macro = metrics.get("macro_f1",None)
         if micro is not None:
             lines.append(f"Micro-F1: {micro:.3f}")
         if macro is not None:
             lines.append(f"Macro-F1: {macro:.3f}")
-
         return f"<pre>{chr(10).join(lines)}</pre>"
 
-    ########################################################################
-    ## Delete HPC Model - remove entire HPC entry
-    ########################################################################
     def on_delete_model(self):
         row = self.hpc_table.currentRow()
         if row < 0:
-            QMessageBox.warning(self, "No selection", "Select a HPC row first.")
+            QMessageBox.warning(self, "No row selected", "Select an HPC row first.")
             return
 
         combo_str = self.hpc_table.item(row, 1).text()
-        val_acc_str = self.hpc_table.item(row, 2).text()
+        val_acc_s = self.hpc_table.item(row, 2).text()
         try:
-            val_acc = float(val_acc_str)
+            val_acc = float(val_acc_s)
         except:
             val_acc = 0.0
 
@@ -1176,7 +1067,7 @@ class AutoSearchTab(QWidget):
                 break
 
         if found_index is None:
-            QMessageBox.information(self, "Not found", "No matching HPC combo in memory.")
+            QMessageBox.information(self, "Not Found", "No matching HPC combo in memory.")
             return
 
         found = self.all_results[found_index]
@@ -1189,16 +1080,13 @@ class AutoSearchTab(QWidget):
                 QMessageBox.critical(self, "Error", f"Could not delete: {e}")
 
         self.all_results.pop(found_index)
-        self.hpc_log.append("Removed this HPC combo from the list.")
+        self.hpc_log.append("Removed HPC combo from list.")
 
         self._save_current_hpc_results()
         self._update_hpc_table()
         self._plot_hpc_combo_chart()
         self._plot_hpc_auc_chart()
 
-    ########################################################################
-    ## Final Training
-    ########################################################################
     def on_train_final(self):
         self.final_log.clear()
         self.final_progress.setValue(0)
@@ -1215,19 +1103,19 @@ class AutoSearchTab(QWidget):
         self._plot_final_roc()
 
         if not self.best_params_str:
-            QMessageBox.information(self, "No HPC Combo", "Please pick/generate an HPC combo first.")
+            QMessageBox.information(self, "No HPC Combo", "No best HPC combo to train.")
             return
 
         root_folder = self.dataset_combo.currentText().strip()
         if not os.path.isdir(root_folder):
-            QMessageBox.warning(self, "Invalid Folder", f"{root_folder} is not valid.")
+            QMessageBox.warning(self, "Invalid Folder", f"{root_folder} not valid.")
             return
 
         ep = self.final_epochs_spin.value()
         bs = self.final_batch_spin.value()
         try:
             lr = float(self.final_lr_edit.text().strip())
-        except ValueError:
+        except:
             QMessageBox.critical(self, "LR Error", "Final LR must be float.")
             return
         folds = self.final_folds_spin.value()
@@ -1264,7 +1152,7 @@ class AutoSearchTab(QWidget):
         self._plot_final_chart()
 
     def _on_final_finished(self, final_acc, roc_dict, confmat, metrics):
-        self.final_log.append(f"\nFinal training done => acc={final_acc:.2f}%")
+        self.final_log.append(f"Final training done => acc={final_acc:.2f}%")
         self.final_progress.setValue(100)
         self.btn_final.setEnabled(True)
 
@@ -1313,7 +1201,7 @@ class AutoSearchTab(QWidget):
         self.roc_canvas.figure.clear()
         ax = self.roc_canvas.figure.add_subplot(111)
         if not self.final_roc_data or self.final_roc_data.get("fpr") is None:
-            ax.text(0.5, 0.5, "ROC unavailable (binary/double only)", ha='center', va='center')
+            ax.text(0.5, 0.5, "ROC not available", ha='center', va='center')
         else:
             fpr = self.final_roc_data["fpr"]
             tpr = self.final_roc_data["tpr"]
@@ -1332,19 +1220,17 @@ class AutoSearchTab(QWidget):
         if not self.final_metrics_data:
             self.metrics_text.append("No class metrics found.")
             return
-
-        prec = self.final_metrics_data.get("precision", [])
-        rec = self.final_metrics_data.get("recall", [])
-        f1s = self.final_metrics_data.get("f1", [])
-        sup = self.final_metrics_data.get("support", [])
-
-        self.metrics_text.append("<b>Class Metrics</b> (Precision / Recall / F1 / Support)")
+        prec = self.final_metrics_data.get("precision",[])
+        rec = self.final_metrics_data.get("recall",[])
+        f1s = self.final_metrics_data.get("f1",[])
+        sup = self.final_metrics_data.get("support",[])
+        self.metrics_text.append("<b>Class Metrics</b> (Precision/Recall/F1/Support)")
         for i in range(len(prec)):
             self.metrics_text.append(
                 f"Class {i}: p={prec[i]:.3f}, r={rec[i]:.3f}, f1={f1s[i]:.3f}, sup={sup[i]}"
             )
-        micro = self.final_metrics_data.get("micro_f1", None)
-        macro = self.final_metrics_data.get("macro_f1", None)
+        micro = self.final_metrics_data.get("micro_f1",None)
+        macro = self.final_metrics_data.get("macro_f1",None)
         if micro is not None:
             self.metrics_text.append(f"\nMicro-F1: {micro:.3f}")
         if macro is not None:

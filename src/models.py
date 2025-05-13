@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 
 ################################################################################
@@ -40,14 +41,16 @@ class SimpleCNN(nn.Module):
         return x
 
 ################################################################################
-# Two‐headed CNN => "double" (binary + threeclass)
+# Two‐headed CNN => "double" (binary + 3-class)
 ################################################################################
 
 class DoubleHeadCNN(nn.Module):
     """
     A CNN that uses a single shared feature extractor but has two output "heads":
-      1) Binary: no_tumor vs tumor
-      2) 3-class: pituitary / meningioma / glioma
+      (1) Binary: NoTumor vs Tumor
+      (2) Threeclass: Pituitary / Meningioma / Glioma
+
+    We choose the output by calling forward(..., mode='binary') or mode='threeclass'.
     """
     def __init__(self, input_size=128, dropout=0.0):
         super().__init__()
@@ -64,17 +67,17 @@ class DoubleHeadCNN(nn.Module):
         )
         flattened_dim = 16 * (input_size // 4) * (input_size // 4)
 
-        # Head 1: Binary => NoTumor vs Tumor
+        # Head 1: Binary => [NoTumor, Tumor]
         self.head_binary = nn.Sequential(
             nn.Flatten(),
             nn.Linear(flattened_dim, 32),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(32, 2)
+            nn.Linear(32, 2)  # => 2 outputs
         )
 
-        # Head 2: threeclass => Pituitary, Meningioma, Glioma
-        self.head_three = nn.Sequential(
+        # Head 2: threeclass => [Pituitary, Meningioma, Glioma]
+        self.head_threeclass = nn.Sequential(
             nn.Flatten(),
             nn.Linear(flattened_dim, 32),
             nn.ReLU(),
@@ -83,25 +86,29 @@ class DoubleHeadCNN(nn.Module):
         )
 
     def forward(self, x, mode='binary'):
+        """
+        mode='binary' => returns [batch_size, 2] (NoTumor vs Tumor)
+        mode='threeclass' => returns [batch_size, 3] (pituitary / meningioma / glioma)
+        """
         feats = self.shared_features(x)
         if mode == 'binary':
             return self.head_binary(feats)
+        elif mode == 'threeclass':
+            return self.head_threeclass(feats)
         else:
-            return self.head_three(feats)
-
+            raise ValueError(f"Invalid mode='{mode}' in DoubleHeadCNN.")
 
 ################################################################################
-# get_model with new names: "simple4", "threeclass", "binary", "double"
+# get_model with new names: "simple" (4-class), "threeclass", "binary", "double"
 ################################################################################
 
 def get_model(model_variant, input_size=128, dropout=0.0):
     """
     Create a model instance:
-      - simple4 => single CNN, 4-class
-      - threeclass => single CNN, 3-class
-      - binary => single CNN, 2-class
-      - double => two-headed net (binary + threeclass)
-      - transfer / custom => placeholders
+      - "simple" => single CNN, 4-class
+      - "threeclass" => single CNN, 3-class
+      - "binary" => single CNN, 2-class
+      - "double" => two-headed net (binary + multi)
     """
     if model_variant == "simple":
         return SimpleCNN(num_classes=4, input_size=input_size, dropout=dropout), 4
@@ -114,11 +121,6 @@ def get_model(model_variant, input_size=128, dropout=0.0):
 
     elif model_variant == "double":
         return DoubleHeadCNN(input_size=input_size, dropout=dropout), None
-
-    elif model_variant == "transfer":
-        raise NotImplementedError("Transfer learning => implement your advanced net here.")
-    elif model_variant == "custom":
-        raise NotImplementedError("Custom model => implement your advanced net here.")
 
     else:
         raise ValueError(f"Unknown model variant: {model_variant}")

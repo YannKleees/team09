@@ -1,5 +1,3 @@
-# File: logic/inference.py
-
 import os
 import csv
 import torch
@@ -9,11 +7,13 @@ from PIL import Image
 from src.models import get_model
 from src.transforms_config import create_transform
 
-
 class InferenceModel:
     """
     Enhanced helper class for loading a trained model checkpoint
     and performing single-image or batch (folder) prediction.
+    For 'double' variant: first we classify (NoTumor vs Tumor).
+       If Tumor, we do the 3-class head to differentiate
+       (Pituitary / Meningioma / Glioma).
     """
 
     def __init__(
@@ -53,53 +53,71 @@ class InferenceModel:
     def predict(self, pil_img):
         """
         Single-image prediction.
+        For 'double': we do binary => if "tumor",
+                      then do threeclass => classify Pituitary / Meningioma / Glioma.
 
-        Returns a dict with predictions and probabilities:
-         - For 'double':
-              {
-                "prediction": "no_tumor" OR "tumor_subtype_X",
-                "binary_probs": [...],
-                "multi_probs": [...]
-              }
-         - For 'multi':
-              {
-                "class_index": int,
-                "probabilities": [...]
-              }
-         - For 'binary':
-              {
-                "class_index": 0 or 1,
-                "probabilities": [...]
-              }
+        Returns a dict containing:
+          {
+            "prediction": "NoTumor" or "Pituitary"/"Meningioma"/"Glioma",
+            "binary_probs": [float, float],        # raw probabilities for no/tumor
+            "binary_perc":  [str, str],            # e.g. ["85.2%", "14.8%"]
+            "multi_probs":  [floats or None],      # 3-class probabilities if tumor
+            "multi_perc":   [str or None],         # 3-class percentages if tumor
+          }
+
+        If not double, returns a simpler structure with:
+          {
+            "class_index": <int>,
+            "probabilities": [float...]
+          }
         """
         x = self.transform(pil_img).unsqueeze(0).to(self.device)
         with torch.no_grad():
             if self.model_variant == "double":
+                # 1) Binary (NoTumor vs Tumor)
                 out_bin = self.model(x, mode='binary')
                 bin_probs = F.softmax(out_bin, dim=1)[0]  # shape [2]
-                # if the bin_probs[1] > bin_probs[0], we have a tumor => check multi
+                bin_probs_float = [float(p) for p in bin_probs]
+                bin_probs_percent = [f"{p*100:.1f}%" for p in bin_probs_float]
+
+                # Check if tumor (binary index=1)
                 if bin_probs[1] > bin_probs[0]:
-                    out_multi = self.model(x, mode='multi')
-                    multi_probs = F.softmax(out_multi, dim=1)[0]  # shape [3]
+                    # 2) Three-class => Pituitary / Meningioma / Glioma
+                    out_3c = self.model(x, mode='threeclass')
+                    multi_probs = F.softmax(out_3c, dim=1)[0]  # shape [3]
+                    multi_probs_float = [float(p) for p in multi_probs]
+                    multi_probs_percent = [f"{p*100:.1f}%" for p in multi_probs_float]
+
                     subtype_idx = multi_probs.argmax().item()
+                    # Tumor labels
+                    tumor_labels = ["Pituitary", "Meningioma", "Glioma"]
+                    subtype_label = tumor_labels[subtype_idx]
+
                     return {
-                        "prediction": f"tumor_subtype_{subtype_idx}",
-                        "binary_probs": bin_probs.tolist(),
-                        "multi_probs": multi_probs.tolist()
+                        "prediction": subtype_label,
+                        "binary_probs": bin_probs_float,
+                        "binary_perc": bin_probs_percent,
+                        "multi_probs": multi_probs_float,
+                        "multi_perc": multi_probs_percent
                     }
                 else:
+                    # NoTumor
                     return {
-                        "prediction": "no_tumor",
-                        "binary_probs": bin_probs.tolist()
+                        "prediction": "NoTumor",
+                        "binary_probs": bin_probs_float,
+                        "binary_perc": bin_probs_percent,
+                        "multi_probs": None,
+                        "multi_perc": None
                     }
             else:
-                # single-head (binary or multi)
+                # Single-head (binary, threeclass, or multi)
                 out = self.model(x)
                 probs = F.softmax(out, dim=1)[0]
-                pred_idx = probs.argmax().item()
+                probs_float = [float(p) for p in probs]
+                class_idx = probs.argmax().item()
                 return {
-                    "class_index": int(pred_idx),
-                    "probabilities": probs.tolist()
+                    "class_index": class_idx,
+                    "probabilities": probs_float
                 }
 
     def predict_batch(
@@ -111,23 +129,11 @@ class InferenceModel:
         """
         Batch inference on multiple images.
 
-        :param image_paths: list of file paths to run inference on.
-        :param folder_path: optional folder containing images. If provided, 
-                           we'll scan for .png/.jpg/.jpeg in that folder (non-recursive).
-        :param export_csv: if set to a filename (e.g. "results.csv"), we export predictions.
-
-        :return: A list of dict results. Each dict includes:
-                 {
-                    "file": "/path/to/image.png",
-                    "prediction": "...",
-                    "binary_probs": [...] or None,
-                    "multi_probs": [...] or None,
-                    "class_index": ...,
-                    "probabilities": [...]
-                 }
-                 (fields vary depending on model type)
+        Each returned dict has the same keys as `predict()`.
+        - If double => "prediction", "binary_probs", "multi_probs" etc.
+        - Otherwise => "class_index", "probabilities".
         """
-        # Gather the file list from either image_paths or folder_path:
+        # Gather the file list from either `image_paths` or `folder_path`.
         file_list = []
         if image_paths:
             file_list = list(image_paths)
@@ -144,22 +150,21 @@ class InferenceModel:
             raise ValueError("Must provide image_paths or folder_path for batch inference.")
 
         results = []
-
         for img_path in file_list:
             if not os.path.isfile(img_path):
                 # skip invalid
                 continue
-
             try:
                 pil_img = Image.open(img_path).convert('L')
             except Exception as e:
-                # optional: store error
-                res = {"file": img_path, "error": f"Could not open: {e}"}
-                results.append(res)
+                results.append({
+                    "file": img_path,
+                    "error": f"Could not open: {e}"
+                })
                 continue
 
             # Single predict
-            pred_dict = self._predict_internal(pil_img)
+            pred_dict = self.predict(pil_img)
             pred_dict["file"] = img_path
             results.append(pred_dict)
 
@@ -208,13 +213,16 @@ class InferenceModel:
     def _export_results_csv(self, results, csv_path):
         """
         Exports batch inference results to a CSV file.
-        We'll unify fields across 'double'/'binary'/'multi' for convenience.
+        For double, we store columns for prediction, binary & multi probabilities, etc.
         """
-        # We'll guess some columns that might appear:
-        fieldnames = ["file","prediction","binary_probs","multi_probs","class_index","probabilities","error"]
-        # Filter out columns that never appear
-        # For simplicity, let's keep them but set them to "" if missing.
-
+        fieldnames = [
+            "file",
+            "prediction",
+            "binary_probs", "binary_perc",
+            "multi_probs",  "multi_perc",
+            "class_index",  "probabilities",
+            "error"
+        ]
         try:
             with open(csv_path, mode='w', newline='', encoding='utf-8') as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
