@@ -550,12 +550,19 @@ class AutoSearchTab(QWidget):
         self.mini_epoch_spin.setValue(2)
         hpc_form.addRow("Mini-Epochs:", self.mini_epoch_spin)
 
+        self.transferlearn_model = QComboBox()
+        self.transferlearn_model.addItems(["None","ResNet18"])
+        hpc_form.addRow("Transfer-learning:", self.transferlearn_model)
+
+        self.transferlearn_mode = QComboBox()
+        self.transferlearn_mode.addItems(["finetuning","feature extraction"])
+        hpc_form.addRow("Transfer-learning:", self.transferlearn_mode)
+
         self.btn_hpc = QPushButton("Run HPC Search")
         self.btn_hpc.clicked.connect(self.on_run_hpc)
         hpc_form.addRow(self.btn_hpc)
 
         cont_layout.addWidget(hpc_group)
-
         # HPC logs/progress
         self.hpc_progress = QProgressBar()
         self.hpc_progress.setValue(0)
@@ -827,31 +834,43 @@ class AutoSearchTab(QWidget):
             return
 
         mep = self.mini_epoch_spin.value()
+        print(self.transferlearn_model.currentText())
+        if self.transferlearn_model.currentText() != "None":
+            from src.transfer_learning import transfer_learning
+            tf = transfer_learning(batch_size=bs,num_epochs=mep,lr=lr,data_root=root_dir,disable_augment=disaug_list,adv_aug=advaug_list)
+            tf.epoch_msg.connect(self._on_hpc_log)
+            os.makedirs("hpc_checkpoints", exist_ok=True)
+            if self.transferlearn_mode.currentText() == "finetuning":
+                finetuned=tf.finetuning(mode=model_list[0])
+                torch.save(finetuned, os.path.join("hpc_checkpoints", f"finetuned_resnet18.pth"))
+            elif self.transferlearn_mode.currentText() == "feature extraction":
+                feat_extracted=tf.feat_extractor(mode=model_list[0])
+                torch.save(feat_extracted, os.path.join("hpc_checkpoints", f"feat_extracted_resnet18.pth"))
+        else:
+            from .auto_search_tab import HPCSearchWorker
+            self.hpc_worker = HPCSearchWorker()
+            self.hpc_worker.setup_hpc(
+                data_root=root_dir,
+                model_variants=model_list,
+                resize_list=resize_list,
+                disable_aug_list=disaug_list,
+                adv_aug_list=advaug_list,
+                dropout_list=do_list,
+                weight_decay_list=wdec_list,
+                earlystop_list=es_list,
+                class_weight_list=cw_list,
+                batch_size=bs,
+                lr=lr,
+                mini_epochs=mep,
+                device="cuda" if torch.cuda.is_available() else "cpu"
+            )
+            self.hpc_worker.progress.connect(self._on_hpc_progress)
+            self.hpc_worker.log_msg.connect(self._on_hpc_log)
+            self.hpc_worker.combo_epoch_update.connect(self._on_hpc_combo_epoch)
+            self.hpc_worker.finished.connect(self._on_hpc_finished)
 
-        from .auto_search_tab import HPCSearchWorker
-        self.hpc_worker = HPCSearchWorker()
-        self.hpc_worker.setup_hpc(
-            data_root=root_dir,
-            model_variants=model_list,
-            resize_list=resize_list,
-            disable_aug_list=disaug_list,
-            adv_aug_list=advaug_list,
-            dropout_list=do_list,
-            weight_decay_list=wdec_list,
-            earlystop_list=es_list,
-            class_weight_list=cw_list,
-            batch_size=bs,
-            lr=lr,
-            mini_epochs=mep,
-            device="cuda" if torch.cuda.is_available() else "cpu"
-        )
-        self.hpc_worker.progress.connect(self._on_hpc_progress)
-        self.hpc_worker.log_msg.connect(self._on_hpc_log)
-        self.hpc_worker.combo_epoch_update.connect(self._on_hpc_combo_epoch)
-        self.hpc_worker.finished.connect(self._on_hpc_finished)
-
-        self.btn_hpc.setEnabled(False)
-        self.hpc_worker.start()
+            self.btn_hpc.setEnabled(False)
+            self.hpc_worker.start()
 
     def _on_hpc_progress(self, val):
         self.hpc_progress.setValue(val)

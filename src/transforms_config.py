@@ -8,7 +8,8 @@ def create_transform(
     adv_aug=False,
     strong_aug=False,
     rotation_deg=0,
-    brightness_range=(1.0,1.0)
+    brightness_range=(1.0,1.0),
+    one_ch_to_three_ch=False
 ):
     """
     Build a transform pipeline WITHOUT any intensity normalization.
@@ -33,7 +34,8 @@ def create_transform(
 
     if strong_aug:
         transform_list.append(T.RandomPerspective(distortion_scale=0.2, p=0.5))
-
+    if one_ch_to_three_ch:
+        transform_list.append(T.Grayscale(num_output_channels=3))
     transform_list.append(T.ToTensor())
 
     return T.Compose(transform_list)
