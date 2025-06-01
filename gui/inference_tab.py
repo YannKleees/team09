@@ -954,7 +954,7 @@ class InferenceTab(QWidget):
             self.results_table.setItem(row_idx, 2+i, prob_item)
 
         self.results_table.setItem(row_idx, 6, QTableWidgetItem(""))
-
+        self.results_table.setMinimumHeight(1000)
     def _interpret_result(self, res_dict):
         """
         Return (pred_label, [pNoTum, pPit, pMen, pGli]).

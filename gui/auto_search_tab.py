@@ -213,8 +213,8 @@ class HPCSearchWorker(QThread):
                     batch_size=self.batch_size,
                     lr=self.lr,
                     epochs=self.mini_epochs,
-                    disable_augment=True,
-                    adv_aug=False,
+                    disable_augment=True,   # removed references to adv_aug
+                    adv_aug=False,          # removed references to adv_aug
                     dropout=drop,
                     weight_decay=wdec,
                     earlystop_patience=estop,
@@ -500,6 +500,7 @@ class AutoSearchTab(QWidget):
         cont_layout.setContentsMargins(15,15,15,15)
         cont_layout.setSpacing(20)
 
+        # HPC group
         hpc_group = QGroupBox("Hyperparameter Search (HPC)")
         hpc_form = QFormLayout(hpc_group)
 
@@ -557,6 +558,7 @@ class AutoSearchTab(QWidget):
 
         cont_layout.addWidget(hpc_group)
 
+        # HPC progress & log
         self.hpc_progress = QProgressBar()
         self.hpc_progress.setValue(0)
         self.hpc_log = QTextEdit()
@@ -574,6 +576,7 @@ class AutoSearchTab(QWidget):
         cont_layout.addWidget(self.hpc_canvas)
         cont_layout.addWidget(self.hpc_toolbar)
 
+        # HPC Results Overview
         results_group = QGroupBox("HPC Results Overview")
         rg_layout = QVBoxLayout(results_group)
 
@@ -581,7 +584,7 @@ class AutoSearchTab(QWidget):
         self.hpc_table.setColumnCount(4)
         self.hpc_table.setHorizontalHeaderLabels(["Rank","Combo","Val Acc","Model?"])
         self.hpc_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.hpc_table.setMinimumHeight(180)
+        self.hpc_table.setMinimumHeight(800)  # <--- bigger table
         rg_layout.addWidget(self.hpc_table)
 
         h_btn_row = QHBoxLayout()
@@ -597,25 +600,26 @@ class AutoSearchTab(QWidget):
 
         self.hpc_info_text = QTextEdit()
         self.hpc_info_text.setReadOnly(True)
-        self.hpc_info_text.setMinimumHeight(150)
+        self.hpc_info_text.setMinimumHeight(200)  # <--- bigger info text
         rg_layout.addWidget(self.hpc_info_text)
 
         self.hpc_bar_canvas = MplCanvas(self, width=8, height=3, dpi=100)
-        self.hpc_bar_canvas.setMinimumSize(800, 400)
+        self.hpc_bar_canvas.setMinimumSize(800, 450)  # <--- larger
         self.hpc_bar_toolbar = NavigationToolbar(self.hpc_bar_canvas, self)
         rg_layout.addWidget(QLabel("<b>HPC Combos: Validation Accuracy</b>"))
         rg_layout.addWidget(self.hpc_bar_canvas)
         rg_layout.addWidget(self.hpc_bar_toolbar)
 
         self.hpc_auc_canvas = MplCanvas(self, width=8, height=3, dpi=100)
-        self.hpc_auc_canvas.setMinimumSize(800, 400)
+        self.hpc_auc_canvas.setMinimumSize(800, 450)  # <--- larger
         self.hpc_auc_toolbar = NavigationToolbar(self.hpc_auc_canvas, self)
-        rg_layout.addWidget(QLabel("<b>HPC Combos: ROC AUC (Binary/Double Only)</b>"))
+        rg_layout.addWidget(QLabel("<b>HPC Combos: ROC AUC (Binary Only)</b>"))
         rg_layout.addWidget(self.hpc_auc_canvas)
         rg_layout.addWidget(self.hpc_auc_toolbar)
 
         cont_layout.addWidget(results_group)
 
+        # Final Training group
         final_box = QGroupBox("Final Training (Use HPC Combo)")
         final_form = QFormLayout(final_box)
 

@@ -8,16 +8,12 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QGroupBox, QFormLayout, QHBoxLayout,
     QPushButton, QCheckBox, QSlider, QFileDialog, QMessageBox, QSpinBox,
     QTextEdit, QProgressBar, QTabWidget, QGridLayout, QSpacerItem, QSizePolicy,
-    QScrollArea, QLineEdit
+    QScrollArea, QLineEdit, QDoubleSpinBox
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
 from gui.widgets import MplCanvas
-from logic.augmentation import (
-    preview_augmentation,
-    bulk_augment_dataset
-)
-
+from logic.augmentation import preview_augmentation, bulk_augment_dataset
 import numpy as np
 
 
@@ -123,6 +119,24 @@ class AugmentationWorker(QThread):
             self.finished.emit(0, [msg])
 
 
+class QDoubleSpinBoxRange(QDoubleSpinBox):
+    """
+    Helper widget for double spin boxes to quickly set:
+      - range
+      - default value
+      - single step
+      - decimals
+      - a tooltip
+    """
+    def __init__(self, minv, maxv, default, label_name="", parent=None):
+        super().__init__(parent)
+        self.setRange(minv, maxv)
+        self.setSingleStep(0.05)
+        self.setValue(default)
+        self.setDecimals(2)
+        self.setToolTip(label_name)
+
+
 class AugmentationTab(QWidget):
     """
     Two subtabs:
@@ -198,6 +212,7 @@ class AugmentationTab(QWidget):
         self.prev_btn.clicked.connect(self.on_preview)
 
         form.addRow(self.load_btn)
+
         rot_layout = QHBoxLayout()
         rot_layout.addWidget(self.rotate_chk)
         rot_layout.addWidget(self.rotate_slider)
@@ -264,14 +279,16 @@ class AugmentationTab(QWidget):
         grid_layout.setSpacing(8)
         row = 0
 
+        # Original
         orig_lbl = QLabel("Original")
         grid_layout.addWidget(orig_lbl, row, 0, 1, 1, alignment=Qt.AlignHCenter)
         orig_canvas = MplCanvas(grid_widget, width=3, height=3)
         self._show_pil_on_canvas(orig_canvas, self.original_img)
         grid_layout.addWidget(orig_canvas, row+1, 0)
 
+        # Previews
         for i in range(n_previews):
-            col = i+1
+            col = i + 1
             lbl = QLabel(f"Preview {i+1}")
             grid_layout.addWidget(lbl, row, col, alignment=Qt.AlignHCenter)
             canvas = MplCanvas(grid_widget, width=3, height=3)
@@ -317,13 +334,17 @@ class AugmentationTab(QWidget):
     # BULK AUGMENTATION TAB
     # ----------------------------------------------------------------
     def _create_bulk_tab(self):
+        """
+        Wraps the bulk augmentation area in a QScrollArea so it can expand or scroll.
+        """
+        # Core widget for the bulk area
         bulk_widget = QWidget()
         layout = QVBoxLayout(bulk_widget)
 
+        # --- Bulk config box
         bulk_box = QGroupBox("Bulk Augmentation Configuration")
         bform = QFormLayout()
 
-        # ** NEW: source dataset folder + browse
         self.src_folder_edit = QLineEdit("cleaned_data")
         self.btn_src_browse = QPushButton("Browse...")
         self.btn_src_browse.clicked.connect(self.on_browse_src)
@@ -332,7 +353,6 @@ class AugmentationTab(QWidget):
         h_src.addWidget(self.btn_src_browse)
         bform.addRow("Source Folder:", h_src)
 
-        # ** NEW: destination folder + browse
         self.dst_folder_edit = QLineEdit("augmented_data")
         self.btn_dst_browse = QPushButton("Browse...")
         self.btn_dst_browse.clicked.connect(self.on_browse_dst)
@@ -341,7 +361,6 @@ class AugmentationTab(QWidget):
         h_dst.addWidget(self.btn_dst_browse)
         bform.addRow("Destination Folder:", h_dst)
 
-        # final target spin
         self.target_spin = QSpinBox()
         self.target_spin.setRange(1, 99999)
         self.target_spin.setValue(3000)
@@ -419,10 +438,12 @@ class AugmentationTab(QWidget):
         bulk_box.setLayout(bform)
         layout.addWidget(bulk_box)
 
+        # --- Distribution box
         dist_box = QGroupBox("Distribution Dashboard")
         dist_layout = QVBoxLayout(dist_box)
         info_label = QLabel(
-            "Shows how class counts changed from the chosen source folder to the chosen destination folder."
+            "Shows how class counts changed from the chosen source folder "
+            "to the chosen destination folder."
         )
         info_label.setWordWrap(True)
         dist_layout.addWidget(info_label)
@@ -438,16 +459,20 @@ class AugmentationTab(QWidget):
 
         layout.addWidget(dist_box)
 
-        return bulk_widget
+        # Wrap everything in a scroll area so it can expand or scroll
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setMinimumHeight(500)  # adjust to taste
+        scroll_area.setWidget(bulk_widget)
 
-    # ** NEW: browse for source folder
+        return scroll_area
+
     def on_browse_src(self):
         dlg = QFileDialog(self)
         dlg.setFileMode(QFileDialog.Directory)
         if dlg.exec_():
             self.src_folder_edit.setText(dlg.selectedFiles()[0])
 
-    # ** NEW: browse for destination folder
     def on_browse_dst(self):
         dlg = QFileDialog(self)
         dlg.setFileMode(QFileDialog.Directory)
@@ -486,8 +511,8 @@ class AugmentationTab(QWidget):
         g_max = self.bulk_g_max.value()
 
         self.worker = AugmentationWorker(
-            src_root=src_folder,       # pass user choice
-            dst_root=dst_folder,       # pass user choice
+            src_root=src_folder,
+            dst_root=dst_folder,
             final_target=final_target,
             rotate_deg=rotate_deg,
             do_rotate=do_rotate,
@@ -521,15 +546,19 @@ class AugmentationTab(QWidget):
                 self.aug_log.append(e)
 
     def on_show_distribution(self):
-        # We'll compare the distribution from the chosen src folder to the chosen dst folder
+        # Compare distribution from the chosen src folder to the chosen dst folder
         src_folder = self.src_folder_edit.text().strip()
         dst_folder = self.dst_folder_edit.text().strip()
 
         cleaned_dist = count_distribution(src_folder)
         aug_dist = count_distribution(dst_folder)
 
-        # For a simpler example, let's just compare all subsets that appear
+        # 1) Collect all possible subset/class combos
         all_keys = sorted(set(cleaned_dist.keys()).union(aug_dist.keys()))
+
+        # 2) **New**: Filter out anything that isn't "Training/...".
+        all_keys = [k for k in all_keys if k.startswith("Training/")]
+
         cleaned_vals = [cleaned_dist.get(k, 0) for k in all_keys]
         aug_vals = [aug_dist.get(k, 0) for k in all_keys]
 
@@ -542,6 +571,7 @@ class AugmentationTab(QWidget):
         bars_cleaned = ax.bar(x_positions - width/2, cleaned_vals, width, label="Source")
         bars_aug = ax.bar(x_positions + width/2, aug_vals, width, label="Destination")
 
+        # Annotate bars (optional)
         for bar in bars_cleaned:
             height = bar.get_height()
             ax.text(
@@ -559,7 +589,7 @@ class AugmentationTab(QWidget):
             )
 
         ax.set_ylabel("Image Count")
-        ax.set_title("Source vs. Destination Distribution")
+        ax.set_title("Source vs. Destination Distribution (Training only)")
         ax.set_xticks(x_positions)
         ax.set_xticklabels(all_keys, rotation=45, ha='right')
         ax.legend()
@@ -567,20 +597,9 @@ class AugmentationTab(QWidget):
         self.dist_canvas.figure.tight_layout()
         self.dist_canvas.draw()
 
-        self.aug_log.append("<b>Distribution comparison (source vs. destination):</b>")
+        # Show logs in the text area if desired:
+        self.aug_log.append("<b>Distribution comparison (Training only):</b>")
         for k in all_keys:
             c_val = cleaned_dist.get(k, 0)
             a_val = aug_dist.get(k, 0)
             self.aug_log.append(f"{k}: source={c_val}  destination={a_val}")
-
-
-# Helper widget for double spin boxes
-from PyQt5.QtWidgets import QDoubleSpinBox
-class QDoubleSpinBoxRange(QDoubleSpinBox):
-    def __init__(self, minv, maxv, default, label_name="", parent=None):
-        super().__init__(parent)
-        self.setRange(minv, maxv)
-        self.setSingleStep(0.05)
-        self.setValue(default)
-        self.setDecimals(2)
-        self.setToolTip(label_name)
