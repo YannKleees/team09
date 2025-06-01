@@ -1,17 +1,6 @@
-"""
-auto_search_tab.py
-
-Updated HPC search that removes the old "disable_aug" and "adv_aug" parameters,
-removes any references to "resize", and also removes "double" from the HPC model variants
-so we don't train it. We only keep 'binary', 'simple', 'threeclass'.
-Includes a set of checkboxes for model variants, plus typical HPC space
-(dropout, weight_decay, earlystop, class_weight).
-Everything else (progress display, final training, HPC info) is the same.
-"""
-
 import os
 import json
-import random
+import itertools
 import copy
 import torch
 import numpy as np
@@ -20,7 +9,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QScrollArea, QGroupBox, QFormLayout,
     QLabel, QPushButton, QComboBox, QLineEdit, QSpinBox,
     QProgressBar, QTextEdit, QMessageBox, QHBoxLayout, QTableWidget,
-    QTableWidgetItem, QHeaderView, QFileDialog, QCheckBox
+    QTableWidgetItem, QHeaderView, QCheckBox
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
@@ -31,289 +20,296 @@ from src.experiment import Experiment
 
 _HPC_RESULTS_JSON = "hpc_results.json"
 
+# ------------------------------------------------------------------------------------
+# Helper functions for (de)serialising HPC results
+# ------------------------------------------------------------------------------------
+def _load_existing_hpc_results(self):
+    """
+    Load any persisted HPC results at start-up, repopulate the table/plots,
+    and if at least one combo exists, enable the “Train Final Model” button.
+    """
+    self.all_results = load_hpc_results_json()
+    if not self.all_results:
+        return
+
+    # Refresh the HPC table and charts
+    self._update_hpc_table()
+    self._plot_hpc_combo_chart()
+    self._plot_hpc_auc_chart()
+
+    # Select the best combo by accuracy so we can let the user click "Train Final Model"
+    best_rec = max(self.all_results, key=lambda r: r["val_acc"])
+    self.best_params_str = best_rec["combo_str"]
+    self.btn_final.setEnabled(True)
+
+def _save_current_hpc_results(self):
+    """
+    Handy wrapper for re-saving all HPC combos after deleting or modifying entries.
+    """
+    save_hpc_results_json(self.all_results)
 
 def save_hpc_results_json(all_results, path=_HPC_RESULTS_JSON):
     """
-    Saves HPC combos (confmat/ROC/metrics) to a JSON file so they persist across sessions.
+    Persist the list of HPC result dictionaries so they survive application restarts.
+    Tensor and ndarray fields are converted to vanilla Python lists first.
     """
-    import json
-    data_to_save = []
+    serialisable = []
     for rec in all_results:
-        # Convert confusion matrix, if any
-        confmat_tensor = rec.get("confmat", None)
-        if isinstance(confmat_tensor, torch.Tensor):
-            cmat_list = confmat_tensor.cpu().tolist()
-        else:
-            cmat_list = None
+        cmat = rec.get("confmat")
+        if isinstance(cmat, torch.Tensor):
+            cmat = cmat.cpu().tolist()
 
-        # Convert any ROC arrays to lists
-        roc_obj = rec.get("roc", None)
-        if roc_obj:
-            fpr = roc_obj.get("fpr", [])
-            tpr = roc_obj.get("tpr", [])
-            if isinstance(fpr, np.ndarray):
-                fpr = fpr.tolist()
-            if isinstance(tpr, np.ndarray):
-                tpr = tpr.tolist()
-            roc_obj = {
-                "fpr": fpr,
-                "tpr": tpr,
-                "auc": roc_obj.get("auc", None)
+        roc = rec.get("roc")
+        if roc:
+            roc = {
+                "fpr": (roc.get("fpr") or []),
+                "tpr": (roc.get("tpr") or []),
+                "auc": roc.get("auc"),
             }
-        else:
-            roc_obj = None
+            # Convert np.ndarrays
+            for k in ("fpr", "tpr"):
+                if isinstance(roc[k], np.ndarray):
+                    roc[k] = roc[k].tolist()
 
-        data_to_save.append({
+        serialisable.append({
             "combo_str":     rec.get("combo_str", ""),
             "val_acc":       rec.get("val_acc", 0.0),
             "model_path":    rec.get("model_path", ""),
             "model_variant": rec.get("model_variant", ""),
-            "confmat_list":  cmat_list,
-            "roc":           roc_obj,
+            "confmat_list":  cmat,
+            "roc":           roc,
             "metrics":       rec.get("metrics", None)
         })
 
     try:
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(data_to_save, f, indent=2)
+            json.dump(serialisable, f, indent=2)
     except Exception as e:
         print(f"[WARN] Could not save HPC results to {path}: {e}")
 
 
 def load_hpc_results_json(path=_HPC_RESULTS_JSON):
-    if not os.path.isfile(path):
+    if not os.path.isfile(path) or os.path.getsize(path) == 0:
         return []
-    if os.path.getsize(path) == 0:
-        print(f"[WARN] {path} is empty. Return no HPC combos.")
-        return []
+
     try:
         with open(path, "r", encoding="utf-8") as f:
-            content = f.read().strip()
-            if not content:
-                print(f"[WARN] {path} is empty (or whitespace). Return no HPC combos.")
-                return []
-            data = json.loads(content)
+            data = json.load(f)
     except Exception as e:
-        print(f"[WARN] Could not load HPC combos from {path}: {e}")
+        print(f"[WARN] Could not load {path}: {e}")
         return []
 
-    results = []
+    restored = []
     for item in data:
-        cmat_list = item.get("confmat_list", None)
-        if cmat_list is not None:
-            cmat_tensor = torch.tensor(cmat_list, dtype=torch.int32)
-        else:
-            cmat_tensor = None
+        cmat = item.get("confmat_list")
+        if cmat is not None:
+            cmat = torch.tensor(cmat, dtype=torch.int32)
 
-        results.append({
-            "combo_str":     item.get("combo_str", ""),
+        restored.append({
+            "combo_str":     item.get("combo_str"),
             "val_acc":       item.get("val_acc", 0.0),
-            "model_path":    item.get("model_path", ""),
-            "model_variant": item.get("model_variant", ""),
-            "confmat":       cmat_tensor,
-            "roc":           item.get("roc", None),
-            "metrics":       item.get("metrics", None)
+            "model_path":    item.get("model_path"),
+            "model_variant": item.get("model_variant"),
+            "confmat":       cmat,
+            "roc":           item.get("roc"),
+            "metrics":       item.get("metrics")
         })
-    return results
+    return restored
 
-
+# ------------------------------------------------------------------------------------
+# Worker threads (unchanged)
+# ------------------------------------------------------------------------------------
 class HPCSearchWorker(QThread):
-    """
-    Conduct HPC with partial training for each combo (no "double" variant).
-    We store best val_acc, confmat, ROC, metrics, plus the saved model path.
-    """
+    """Grid-search across model variant × dropout × weight-decay × early-stop × class-weight."""
     progress = pyqtSignal(int)
     log_msg = pyqtSignal(str)
-    combo_epoch_update = pyqtSignal(int, int, float, float)  # combo_idx, epoch, train_acc, val_acc
+    combo_epoch_update = pyqtSignal(int, int, float, float)
     finished = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.data_root = "cleaned_data"
-        self.model_variants = []
-        self.dropout_list = []
-        self.weight_decay_list = []
-        self.earlystop_list = []
-        self.class_weight_list = []
-        self.batch_size = 16
-        self.lr = 0.001
-        self.mini_epochs = 2
-        self.device = "cpu"
+        # default values
+        self.setup_hpc(
+            data_root="cleaned_data", model_variants=[],
+            dropout_list=[], weight_decay_list=[],
+            earlystop_list=[], class_weight_list=[],
+            batch_size=16, lr=1e-3, mini_epochs=2,
+            device="cpu"
+        )
 
         self.best_acc = -1.0
         self.best_params_str = ""
         self.all_results = []
 
+    # ------------------------------------------------------------------
     def setup_hpc(
-        self,
-        data_root,
-        model_variants,
-        dropout_list,
-        weight_decay_list,
-        earlystop_list,
-        class_weight_list,
-        batch_size,
-        lr,
-        mini_epochs,
+        self, data_root, model_variants, dropout_list, weight_decay_list,
+        earlystop_list, class_weight_list, batch_size, lr, mini_epochs,
         device="cpu"
     ):
         self.data_root = data_root
-        self.model_variants = model_variants  # e.g. ["binary","simple","threeclass"] (no double)
+        self.model_variants = model_variants
         self.dropout_list = dropout_list
         self.weight_decay_list = weight_decay_list
         self.earlystop_list = earlystop_list
         self.class_weight_list = class_weight_list
         self.batch_size = batch_size
         self.lr = lr
-        self.mini_epochs = mini_epochs
+        self.epochs  = mini_epochs
+        self.folds   = 1 
         self.device = device
-
+        self.batch        = batch_size      
+        self.batch_size   = batch_size
+        self.mini_epochs  = mini_epochs 
+        self.epochs       = mini_epochs
         self.best_acc = -1.0
         self.best_params_str = ""
         self.all_results = []
 
+    # ------------------------------------------------------------------------------------
+    # HPCSearchWorker.run
+    # ------------------------------------------------------------------------------------
     def run(self):
-        import itertools
+        """
+        Main grid-search loop.
+
+        Uses the new Experiment signature (no disable_augment / adv_aug).
+        """
         param_space = list(itertools.product(
             self.model_variants,
             self.dropout_list,
             self.weight_decay_list,
             self.earlystop_list,
-            self.class_weight_list
+            self.class_weight_list,
         ))
-        total_combos = len(param_space)
-        if total_combos == 0:
-            self.log_msg.emit("No HPC combos specified!")
+        total = len(param_space)
+        if total == 0:
+            self.log_msg.emit("No HPC combinations to evaluate.")
             self.finished.emit()
             return
 
-        self.log_msg.emit(f"Starting HPC with {total_combos} combos, each ~{self.mini_epochs} epoch(s)...")
-
+        self.log_msg.emit(
+            f"Starting HPC search across {total} combos "
+            f"(each {self.mini_epochs} epoch{'s' if self.mini_epochs > 1 else ''})"
+        )
         os.makedirs("hpc_checkpoints", exist_ok=True)
-        from src.experiment import Experiment
 
-        for combo_idx, combo in enumerate(param_space):
-            model_var   = combo[0]
-            drop        = combo[1]
-            wdec        = combo[2]
-            estop       = combo[3]
-            cw          = combo[4]
-
+        for combo_idx, (model_var, drop, wdec, estop, cw) in enumerate(param_space):
             combo_str = (
                 f"model={model_var}, drop={drop}, "
                 f"wdec={wdec}, eStop={estop}, cw={cw}"
             )
-            self.log_msg.emit(f"\n[Combo {combo_idx+1}/{total_combos}] => {combo_str}")
+            self.log_msg.emit(f"\n[{combo_idx + 1}/{total}] {combo_str}")
 
             try:
                 exp = Experiment(
                     data_root=self.data_root,
                     model_variant=model_var,
                     input_size=128,
-                    batch_size=self.batch_size,
+                    batch_size=self.batch,
                     lr=self.lr,
-                    epochs=self.mini_epochs,
-                    disable_augment=True,   # removed references to adv_aug
-                    adv_aug=False,          # removed references to adv_aug
+                    epochs=self.epochs,
                     dropout=drop,
                     weight_decay=wdec,
                     earlystop_patience=estop,
                     use_class_weight=cw,
-                    device=self.device
-                )
+                    device=self.device,
+                    folds=self.folds,
+                    )
+                exp.set_logger(self.log_msg.emit)
                 exp.load_data()
-                if hasattr(exp, "train_dataset") and getattr(exp.train_dataset, "is_empty", False):
-                    self.log_msg.emit("  -> Skipping: dataset is EMPTY.")
-                    self.all_results.append({
-                        "combo_str": combo_str,
-                        "val_acc": 0.0,
-                        "confmat": None,
-                        "roc": None,
-                        "metrics": None,
-                        "model_path": None,
-                        "model_variant": model_var
-                    })
-                    continue
-
+                if getattr(exp.train_dataset, "is_empty", False):
+                    raise RuntimeError("train dataset empty")
                 exp._setup_optimizer_criterion()
 
             except Exception as e:
-                self.log_msg.emit(f"Error building experiment: {e}")
-                self.all_results.append({
-                    "combo_str": combo_str,
-                    "val_acc": 0.0,
-                    "confmat": None,
-                    "roc": None,
-                    "metrics": None,
-                    "model_path": None,
-                    "model_variant": model_var
-                })
+                self.log_msg.emit(f"  !! Build failed: {e}")
+                self._cache_result(combo_str, model_var, 0.0, None, None, None, None)
+                self.progress.emit(int(100 * (combo_idx + 1) / total))
                 continue
 
-            best_val_for_combo = 0.0
-            best_state_dict = None
-            best_confmat = None
-            best_roc = None
-            best_metrics = None
-            no_improve_count = 0
+            best_val, best_state, best_confmat, best_roc, best_metrics = \
+                self._train_partial(exp, combo_idx, estop)
 
-            for ep in range(self.mini_epochs):
-                train_loss, train_acc, _ = exp._train_one_epoch()
-                val_metrics = exp._evaluate()
-                val_acc = val_metrics["accuracy"]
+            model_path = None
+            if best_state is not None:
+                model_path = os.path.join("hpc_checkpoints",
+                                        f"hpc_combo_{combo_idx + 1}.pth")
+                torch.save(best_state, model_path)
 
-                if val_acc > best_val_for_combo:
-                    best_val_for_combo = val_acc
-                    import copy
-                    best_state_dict = copy.deepcopy(exp.model.state_dict())
-                    best_confmat = val_metrics.get("confusion_matrix")
-                    best_roc = {
-                        "fpr": val_metrics.get("roc_fpr"),
-                        "tpr": val_metrics.get("roc_tpr"),
-                        "auc": val_metrics.get("roc_auc")
-                    }
-                    best_metrics = exp._compute_class_metrics(val_metrics)
-                    no_improve_count = 0
-                else:
-                    no_improve_count += 1
-                    if estop > 0 and no_improve_count >= estop:
-                        self.log_msg.emit(f"  -> EarlyStop triggered at epoch {ep+1}")
-                        break
+            self._cache_result(combo_str, model_var,
+                            best_val, best_confmat, best_roc,
+                            best_metrics, model_path)
 
-                self.combo_epoch_update.emit(combo_idx, ep+1, train_acc, val_acc)
-                self.log_msg.emit(f"  Ep {ep+1}/{self.mini_epochs}: train={train_acc:.1f}%, val={val_acc:.1f}%")
-
-            if best_state_dict is not None:
-                model_path = os.path.join("hpc_checkpoints", f"hpc_model_combo_{combo_idx+1}.pth")
-                torch.save(best_state_dict, model_path)
-            else:
-                model_path = None
-
-            self.all_results.append({
-                "combo_str": combo_str,
-                "val_acc": best_val_for_combo,
-                "confmat": best_confmat,
-                "roc": best_roc,
-                "metrics": best_metrics,
-                "model_path": model_path,
-                "model_variant": model_var
-            })
-
-            if best_val_for_combo > self.best_acc:
-                self.best_acc = best_val_for_combo
+            if best_val > self.best_acc:
+                self.best_acc = best_val
                 self.best_params_str = combo_str
 
-            pct = int(100*(combo_idx+1) / total_combos)
-            self.progress.emit(pct)
+            self.progress.emit(int(100 * (combo_idx + 1) / total))
 
-        self.log_msg.emit(f"\nHPC DONE. Best val_acc={self.best_acc:.2f}% => {self.best_params_str}")
+        self.log_msg.emit(
+            f"\nHPC finished. Best val_acc={self.best_acc:.2f}%: {self.best_params_str}"
+        )
         self.finished.emit()
 
 
+
+    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------------------------
+    
+    # ------------------------------------------------------------------------------------
+    def _save_current_hpc_results(self):
+        """
+        Convenience wrapper used by on_delete_model().
+        """
+        save_hpc_results_json(self.all_results)
+
+    def _train_partial(self, exp, combo_idx, estop):
+        best_val = 0.0
+        best_state = best_confmat = best_roc = best_metrics = None
+        patience = 0
+        for ep in range(self.mini_epochs):
+            tr_loss, tr_acc, _ = exp._train_one_epoch()
+            val_metrics = exp._evaluate()
+            val_acc = val_metrics["accuracy"]
+
+            self.combo_epoch_update.emit(combo_idx, ep+1, tr_acc, val_acc)
+            self.log_msg.emit(f"  Ep {ep+1}: train={tr_acc:.1f}%, val={val_acc:.1f}%")
+
+            if val_acc > best_val:
+                best_val = val_acc
+                patience = 0
+                best_state = copy.deepcopy(exp.model.state_dict())
+                best_confmat = val_metrics.get("confusion_matrix")
+                best_roc = {
+                    "fpr": val_metrics.get("roc_fpr"),
+                    "tpr": val_metrics.get("roc_tpr"),
+                    "auc": val_metrics.get("roc_auc")
+                }
+                best_metrics = exp._compute_class_metrics(val_metrics)
+            else:
+                patience += 1
+                if estop and patience >= estop:
+                    self.log_msg.emit(f"  -> Early-stopping at epoch {ep+1}")
+                    break
+        return best_val, best_state, best_confmat, best_roc, best_metrics
+
+    # ------------------------------------------------------------------
+    def _cache_result(self, combo_str, model_var, val_acc,
+                      confmat, roc, metrics, model_path):
+        self.all_results.append({
+            "combo_str": combo_str,
+            "val_acc": val_acc,
+            "model_path": model_path,
+            "model_variant": model_var,
+            "confmat": confmat,
+            "roc": roc,
+            "metrics": metrics
+        })
+
+
 class FinalTrainWorker(QThread):
-    """
-    Performs final training on the best HPC combo.
-    """
+    """Full-length training on the best combo (unchanged)."""
     finishedDetailed = pyqtSignal(float, dict, object, dict)
     progress = pyqtSignal(int)
     log_msg = pyqtSignal(str)
@@ -321,15 +317,11 @@ class FinalTrainWorker(QThread):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.best_params_str = ""
-        self.data_root = "cleaned_data"
-        self.epochs = 10
-        self.batch = 32
-        self.lr = 0.001
-        self.folds = 1
-        self.device = "cpu"
+        self.setup_final("", "cleaned_data", 10, 32, 1e-3, 1, "cpu")
 
-    def setup_final(self, best_params_str, data_root, epochs, batch, lr, folds, device="cpu"):
+    # ------------------------------------------------------------------
+    def setup_final(self, best_params_str, data_root, epochs,
+                    batch, lr, folds, device="cpu"):
         self.best_params_str = best_params_str
         self.data_root = data_root
         self.epochs = epochs
@@ -338,30 +330,26 @@ class FinalTrainWorker(QThread):
         self.folds = folds
         self.device = device
 
+    # ------------------------------------------------------------------
     def run(self):
         if not self.best_params_str:
-            self.log_msg.emit("No HPC combo chosen for final training.")
+            self.log_msg.emit("Final training aborted: no HPC combo.")
             self.finishedDetailed.emit(0.0, {}, None, {})
             return
 
-        # parse param string, e.g. "model=..., drop=..., wdec=..., eStop=..., cw=..."
-        parts = self.best_params_str.split(",")
-        param_dict = {}
-        for p in parts:
-            if "=" in p:
-                kv = p.split("=")
-                if len(kv) == 2:
-                    k, v = kv
-                    param_dict[k.strip()] = v.strip()
+        # Parse hyper-parameter string
+        pmap = {k.strip(): v.strip() for k, v in
+                (piece.split("=") for piece in self.best_params_str.split(",") if "=" in piece)}
 
-        model_var = param_dict.get("model", "binary")
-        drop       = float(param_dict.get("drop", "0.0"))
-        wdec       = float(param_dict.get("wdec", "0.0"))
-        estop      = int(param_dict.get("eStop", "0"))
-        cw         = (param_dict.get("cw", "False") == "True")
+        model_var = pmap.get("model", "binary")
+        drop  = float(pmap.get("drop", 0.0))
+        wdec  = float(pmap.get("wdec", 0.0))
+        estop = int(pmap.get("eStop", 0))
+        cw    = (pmap.get("cw", "False") == "True")
 
-        self.log_msg.emit(f"[Final Training] Using => {self.best_params_str}")
-        self.log_msg.emit(f"Folds={self.folds}, epochs={self.epochs}, batch={self.batch}, lr={self.lr}")
+        self.log_msg.emit(f"[Final] {self.best_params_str}")
+        self.log_msg.emit(f"folds={self.folds}, epochs={self.epochs}, "
+                          f"batch={self.batch}, lr={self.lr}")
 
         try:
             exp = Experiment(
@@ -371,345 +359,93 @@ class FinalTrainWorker(QThread):
                 batch_size=self.batch,
                 lr=self.lr,
                 epochs=self.epochs,
-                disable_augment=True,
-                adv_aug=False,
                 dropout=drop,
                 weight_decay=wdec,
                 earlystop_patience=estop,
                 use_class_weight=cw,
                 device=self.device,
-                folds=self.folds
-            )
+                folds=self.folds,
+                )
             exp.set_logger(self.log_msg.emit)
+            exp.load_data()
+            if getattr(exp.train_dataset, "is_empty", False):
+                raise RuntimeError("train dataset empty")
+            exp._setup_optimizer_criterion()
+
         except Exception as e:
-            self.log_msg.emit(f"Failed building final experiment: {e}")
-            self.progress.emit(0)
+            self.log_msg.emit(f"Build failed: {e}")
             self.finishedDetailed.emit(0.0, {}, None, {})
             return
 
-        exp.load_data()
-        if hasattr(exp, "train_dataset") and getattr(exp.train_dataset, "is_empty", False):
-            self.log_msg.emit("Train dataset is empty => abort.")
-            self.finishedDetailed.emit(0.0, {}, None, {})
-            return
-
-        exp._setup_optimizer_criterion()
-
-        final_acc = 0.0
+        # Single split or k-fold
         if self.folds <= 1:
-            best_val = 0.0
-            no_improve = 0
-            for ep in range(self.epochs):
-                tr_loss, tr_acc, _ = exp._train_one_epoch()
-                val_metrics = exp._evaluate()
-                val_acc = val_metrics["accuracy"]
+            self._run_single_split(exp, estop)
+        else:
+            self._run_kfold(exp)
 
-                if val_acc > best_val:
-                    best_val = val_acc
-                    no_improve = 0
-                else:
-                    no_improve += 1
+    # ------------------------------------------------------------------
+    def _run_single_split(self, exp, estop):
+        best_val = 0.0
+        patience = 0
+        for ep in range(self.epochs):
+            tr_loss, tr_acc, _ = exp._train_one_epoch()
+            val_metrics = exp._evaluate()
+            val_acc = val_metrics["accuracy"]
 
-                self.epoch_update.emit(ep+1, tr_acc, val_acc)
-                pct = int(100*(ep+1)/self.epochs)
-                self.progress.emit(pct)
-                self.log_msg.emit(f"Ep {ep+1}: train={tr_acc:.1f}%, val={val_acc:.1f}%")
+            self.epoch_update.emit(ep+1, tr_acc, val_acc)
+            self.progress.emit(int(100*(ep+1)/self.epochs))
+            self.log_msg.emit(f"Ep {ep+1}: train={tr_acc:.1f}%, val={val_acc:.1f}%")
 
-                if estop>0 and no_improve>=estop:
-                    self.log_msg.emit(f"[EarlyStop at ep {ep+1}]")
+            if val_acc > best_val:
+                best_val = val_acc
+                patience = 0
+            else:
+                patience += 1
+                if estop and patience >= estop:
+                    self.log_msg.emit(f"Early-stop at ep {ep+1}")
                     break
 
-            final_acc = best_val
-        else:
-            avg_acc, _, _, _ = exp.run_kfold(
-                folds=self.folds,
-                epochs=self.epochs
-            )
-            final_acc = avg_acc
-            self.log_msg.emit(f"K-Fold => avg_val_acc={avg_acc:.2f}%")
-            self.progress.emit(100)
+        self.finishedDetailed.emit(
+            best_val, exp.final_roc, exp.final_confmat, exp.final_class_metrics
+        )
 
-        final_roc = exp.final_roc
-        final_confmat = exp.final_confmat
-        final_metrics = exp.final_class_metrics
-        self.finishedDetailed.emit(final_acc, final_roc, final_confmat, final_metrics)
+    # ------------------------------------------------------------------
+    def _run_kfold(self, exp):
+        avg_acc, _, _, _ = exp.run_kfold(self.folds, self.epochs)
+        self.log_msg.emit(f"K-fold avg val_acc={avg_acc:.2f}%")
+        self.progress.emit(100)
+        self.finishedDetailed.emit(
+            avg_acc, exp.final_roc, exp.final_confmat, exp.final_class_metrics
+        )
 
-
+# ------------------------------------------------------------------------------------
+# Main GUI class
+# ------------------------------------------------------------------------------------
 class AutoSearchTab(QWidget):
     """
-    HPC search for (binary, simple, threeclass) but NOT double,
-    plus final training of the best combo, storing confusion matrix & ROC.
+    End-to-end tab:
+      * Hyper-parameter grid-search (binary / simple / threeclass) **or** transfer-learning.
+      * Final full-run training of the best combo.
     """
 
-    hpc_updated = pyqtSignal()
+    hpc_updated = pyqtSignal()   # emitted after every grid-search completion
 
+    # ------------------------------------------------------------------
     def __init__(self, parent=None):
         super().__init__(parent)
-
-        self.setStyleSheet("""
-            QWidget#AutoSearchTab {
-                background-color: #f9f9f9;
-            }
-            QGroupBox {
-                border: 1px solid #cccccc;
-                border-radius: 6px;
-                margin-top: 10px;
-                padding: 10px;
-                font-weight: bold;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                subcontrol-position: top left;
-                padding: 4px 10px;
-                color: #0078D7;
-            }
-            QLabel {
-                font-size: 10pt;
-            }
-            QPushButton {
-                background-color: #0078d7;
-                color: #ffffff;
-                border: none;
-                padding: 6px 14px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #005fa3;
-            }
-            QLineEdit, QTextEdit, QSpinBox, QComboBox {
-                font-size: 9pt;
-                padding: 4px;
-            }
-            QProgressBar {
-                height: 20px;
-                border-radius: 4px;
-                text-align: center;
-            }
-            QTableWidget {
-                font-size: 9pt;
-            }
-        """)
         self.setObjectName("AutoSearchTab")
+        self._build_ui()
+        self._wire_events()
 
-        main_layout = QVBoxLayout(self)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        container = QWidget()
-        cont_layout = QVBoxLayout(container)
-        cont_layout.setContentsMargins(15,15,15,15)
-        cont_layout.setSpacing(20)
-
-        # HPC group
-        hpc_group = QGroupBox("Hyperparameter Search (HPC)")
-        hpc_form = QFormLayout(hpc_group)
-
-        # Dataset folder
-        self.dataset_combo = QComboBox()
-        self.dataset_combo.addItems(["cleaned_data", "unprocessed_data", "augmented_data"])
-        hpc_form.addRow("Dataset Folder:", self.dataset_combo)
-
-        # Model variants => checkboxes, but NO double.
-        self.model_ck_binary = QCheckBox("binary")
-        self.model_ck_simple  = QCheckBox("simple")
-        self.model_ck_threeclass = QCheckBox("threeclass")
-
-        model_ck_layout = QHBoxLayout()
-        model_ck_layout.addWidget(self.model_ck_binary)
-        model_ck_layout.addWidget(self.model_ck_simple)
-        model_ck_layout.addWidget(self.model_ck_threeclass)
-        hpc_form.addRow(QLabel("Model Variants:"), model_ck_layout)
-
-        # Dropout
-        self.dropout_edit = QLineEdit("0.0,0.3")
-        hpc_form.addRow("Dropout List:", self.dropout_edit)
-
-        # Weight decay
-        self.wdec_edit = QLineEdit("0.0,0.0001")
-        hpc_form.addRow("Weight Decay List:", self.wdec_edit)
-
-        # Early stop
-        self.es_edit = QLineEdit("0,3")
-        hpc_form.addRow("EarlyStop List:", self.es_edit)
-
-        # Class Weight
-        self.cw_edit = QLineEdit("False,True")
-        hpc_form.addRow("Class Weight (List):", self.cw_edit)
-
-        # batch size
-        self.batch_spin = QSpinBox()
-        self.batch_spin.setRange(1,512)
-        self.batch_spin.setValue(16)
-        hpc_form.addRow("Batch Size:", self.batch_spin)
-
-        # LR
-        self.lr_edit = QLineEdit("0.001")
-        hpc_form.addRow("Learning Rate:", self.lr_edit)
-
-        # HPC mini-epochs
-        self.mini_epoch_spin = QSpinBox()
-        self.mini_epoch_spin.setRange(1,20)
-        self.mini_epoch_spin.setValue(2)
-        hpc_form.addRow("Mini-Epochs (partial):", self.mini_epoch_spin)
-
-        self.transferlearn_model = QComboBox()
-        self.transferlearn_model.addItems(["None","ResNet18"])
-        hpc_form.addRow("Transfer-learning:", self.transferlearn_model)
-
-        self.transferlearn_mode = QComboBox()
-        self.transferlearn_mode.addItems(["finetuning","feature extraction"])
-        hpc_form.addRow("Transfer-learning:", self.transferlearn_mode)
-
-        self.btn_hpc = QPushButton("Run HPC Search")
-        self.btn_hpc.clicked.connect(self.on_run_hpc)
-        hpc_form.addRow(self.btn_hpc)
-
-        cont_layout.addWidget(hpc_group)
-
-        # HPC progress & log
-        self.hpc_progress = QProgressBar()
-        self.hpc_progress.setValue(0)
-        self.hpc_log = QTextEdit()
-        self.hpc_log.setReadOnly(True)
-        self.hpc_log.setMinimumHeight(180)
-
-        cont_layout.addWidget(self.hpc_progress)
-        cont_layout.addWidget(self.hpc_log)
-
-        self.hpc_canvas = MplCanvas(self, width=8, height=4, dpi=100)
-        self.hpc_canvas.setMinimumSize(800, 400)
-        self.hpc_toolbar = NavigationToolbar(self.hpc_canvas, self)
-
-        cont_layout.addWidget(QLabel("<b>Current HPC Combo: Train vs. Val Accuracy</b>"))
-        cont_layout.addWidget(self.hpc_canvas)
-        cont_layout.addWidget(self.hpc_toolbar)
-
-        # HPC Results Overview
-        results_group = QGroupBox("HPC Results Overview")
-        rg_layout = QVBoxLayout(results_group)
-
-        self.hpc_table = QTableWidget()
-        self.hpc_table.setColumnCount(4)
-        self.hpc_table.setHorizontalHeaderLabels(["Rank","Combo","Val Acc","Model?"])
-        self.hpc_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.hpc_table.setMinimumHeight(800)  # <--- bigger table
-        rg_layout.addWidget(self.hpc_table)
-
-        h_btn_row = QHBoxLayout()
-        self.btn_show_info = QPushButton("Show HPC Info (Selected)")
-        self.btn_show_info.clicked.connect(self.on_show_hpc_info)
-        h_btn_row.addWidget(self.btn_show_info)
-
-        self.btn_delete_model = QPushButton("Delete HPC Model (Selected)")
-        self.btn_delete_model.clicked.connect(self.on_delete_model)
-        h_btn_row.addWidget(self.btn_delete_model)
-
-        rg_layout.addLayout(h_btn_row)
-
-        self.hpc_info_text = QTextEdit()
-        self.hpc_info_text.setReadOnly(True)
-        self.hpc_info_text.setMinimumHeight(200)  # <--- bigger info text
-        rg_layout.addWidget(self.hpc_info_text)
-
-        self.hpc_bar_canvas = MplCanvas(self, width=8, height=3, dpi=100)
-        self.hpc_bar_canvas.setMinimumSize(800, 450)  # <--- larger
-        self.hpc_bar_toolbar = NavigationToolbar(self.hpc_bar_canvas, self)
-        rg_layout.addWidget(QLabel("<b>HPC Combos: Validation Accuracy</b>"))
-        rg_layout.addWidget(self.hpc_bar_canvas)
-        rg_layout.addWidget(self.hpc_bar_toolbar)
-
-        self.hpc_auc_canvas = MplCanvas(self, width=8, height=3, dpi=100)
-        self.hpc_auc_canvas.setMinimumSize(800, 450)  # <--- larger
-        self.hpc_auc_toolbar = NavigationToolbar(self.hpc_auc_canvas, self)
-        rg_layout.addWidget(QLabel("<b>HPC Combos: ROC AUC (Binary Only)</b>"))
-        rg_layout.addWidget(self.hpc_auc_canvas)
-        rg_layout.addWidget(self.hpc_auc_toolbar)
-
-        cont_layout.addWidget(results_group)
-
-        # Final Training group
-        final_box = QGroupBox("Final Training (Use HPC Combo)")
-        final_form = QFormLayout(final_box)
-
-        self.final_epochs_spin = QSpinBox()
-        self.final_epochs_spin.setRange(1,200)
-        self.final_epochs_spin.setValue(10)
-        final_form.addRow("Final Epochs:", self.final_epochs_spin)
-
-        self.final_batch_spin = QSpinBox()
-        self.final_batch_spin.setRange(1,512)
-        self.final_batch_spin.setValue(32)
-        final_form.addRow("Final Batch Size:", self.final_batch_spin)
-
-        self.final_lr_edit = QLineEdit("0.001")
-        final_form.addRow("Final LR:", self.final_lr_edit)
-
-        self.final_folds_spin = QSpinBox()
-        self.final_folds_spin.setRange(1,10)
-        self.final_folds_spin.setValue(1)
-        final_form.addRow("Folds (K-Fold):", self.final_folds_spin)
-
-        self.btn_final = QPushButton("Train Final Model")
-        self.btn_final.setEnabled(False)
-        self.btn_final.clicked.connect(self.on_train_final)
-        final_form.addRow(self.btn_final)
-
-        cont_layout.addWidget(final_box)
-
-        self.final_progress = QProgressBar()
-        self.final_progress.setValue(0)
-        self.final_log = QTextEdit()
-        self.final_log.setReadOnly(True)
-        self.final_log.setMinimumHeight(100)
-        cont_layout.addWidget(self.final_progress)
-        cont_layout.addWidget(self.final_log)
-
-        self.final_canvas = MplCanvas(container, width=8, height=4)
-        self.final_canvas.setMinimumSize(800, 400)
-        self.final_toolbar = NavigationToolbar(self.final_canvas, self)
-        cont_layout.addWidget(QLabel("<b>Final Training: Train vs. Val Accuracy</b>"))
-        cont_layout.addWidget(self.final_canvas)
-        cont_layout.addWidget(self.final_toolbar)
-
-        final_res_g = QGroupBox("Final Results: Confusion Matrix & ROC")
-        fres_layout = QHBoxLayout(final_res_g)
-
-        self.confmat_canvas = MplCanvas(self, width=4, height=3)
-        self.confmat_canvas.setMinimumSize(400, 300)
-        self.confmat_toolbar = NavigationToolbar(self.confmat_canvas, self)
-        v_left = QVBoxLayout()
-        v_left.addWidget(QLabel("<b>Confusion Matrix</b>"))
-        v_left.addWidget(self.confmat_canvas)
-        v_left.addWidget(self.confmat_toolbar)
-        fres_layout.addLayout(v_left)
-
-        self.roc_canvas = MplCanvas(self, width=4, height=3)
-        self.roc_canvas.setMinimumSize(400, 300)
-        self.roc_toolbar = NavigationToolbar(self.roc_canvas, self)
-        v_right = QVBoxLayout()
-        v_right.addWidget(QLabel("<b>ROC Curve (Binary/Double)</b>"))
-        v_right.addWidget(self.roc_canvas)
-        v_right.addWidget(self.roc_toolbar)
-        fres_layout.addLayout(v_right)
-
-        self.metrics_text = QTextEdit()
-        self.metrics_text.setReadOnly(True)
-        fres_layout.addWidget(self.metrics_text)
-
-        cont_layout.addWidget(final_res_g)
-
-        scroll.setWidget(container)
-        main_layout.addWidget(scroll)
-        self.setLayout(main_layout)
-
+        # Runtime state
         self.hpc_worker = None
+        self.final_worker = None
         self.current_combo_idx = -1
         self.hpc_train_acc = []
         self.hpc_val_acc = []
         self.best_params_str = ""
         self.all_results = []
 
-        self.final_worker = None
         self.final_epoch_list = []
         self.final_train_acc_list = []
         self.final_val_acc_list = []
@@ -717,39 +453,261 @@ class AutoSearchTab(QWidget):
         self.final_confmat_data = None
         self.final_metrics_data = None
 
-        # load existing HPC combos from JSON
+        # Load persisted HPC results (if any)
         self._load_existing_hpc_results()
 
+        # Disable TL widgets initially
+        self._on_transfer_checkbox_changed(Qt.Unchecked)
+
+    # ------------------------------------------------------------------
+    # █████████████████████████  UI BUILDING  █████████████████████████
+    # ------------------------------------------------------------------
     def _load_existing_hpc_results(self):
-        loaded = load_hpc_results_json()
-        if loaded:
-            self.all_results = []
-            for item in loaded:
-                rec = {
-                    "combo_str":     item.get("combo_str",""),
-                    "val_acc":       item.get("val_acc",0.0),
-                    "model_path":    item.get("model_path",""),
-                    "model_variant": item.get("model_variant",""),
-                    "metrics":       item.get("metrics",None),
-                    "roc":           item.get("roc",None),
-                    "confmat":       item.get("confmat",None)
-                }
-                self.all_results.append(rec)
+        """
+        Load any persisted HPC results at start-up, repopulate the table/plots,
+        and, if at least one combo exists, enable the “Train Final Model” button.
+        """
+        self.all_results = load_hpc_results_json()
+        if not self.all_results:
+            return
 
-            self._update_hpc_table()
-            self._plot_hpc_combo_chart()
-            self._plot_hpc_auc_chart()
+        # Refresh UI
+        self._update_hpc_table()
+        self._plot_hpc_combo_chart()
+        self._plot_hpc_auc_chart()
 
-            best = max(self.all_results, key=lambda r: r["val_acc"], default=None)
-            if best:
-                self.best_params_str = best["combo_str"]
-                self.hpc_log.append(f"Loaded HPC combos from JSON. Best => {self.best_params_str}")
-                self.btn_final.setEnabled(True)
+        # Pre-select best combo
+        best_rec = max(self.all_results, key=lambda r: r["val_acc"])
+        self.best_params_str = best_rec["combo_str"]
+        self.btn_final.setEnabled(True)
 
-    def _save_current_hpc_results(self):
-        save_hpc_results_json(self.all_results)
+    def _plot_hpc_training_chart(self):
+        self.hpc_canvas.figure.clear()
+        ax = self.hpc_canvas.figure.add_subplot(111)
+        if not self.hpc_train_acc:
+            ax.text(0.5, 0.5, "No data yet", ha="center", va="center")
+        else:
+            ax.plot(self.hpc_train_acc, label="Train", marker="o")
+            ax.plot(self.hpc_val_acc,   label="Val",   marker="s")
+            ax.set_xlabel("Epoch")
+            ax.set_ylabel("Accuracy (%)")
+            ax.set_title("Current Combo")
+            ax.grid(True)
+            ax.legend()
+        self.hpc_canvas.figure.tight_layout()
+        self.hpc_canvas.draw()
 
+    def _build_ui(self):
+        # ---------- Main containers ----------
+        main_layout = QVBoxLayout(self)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        container = QWidget()
+        cont_layout = QVBoxLayout(container)
+        cont_layout.setContentsMargins(15, 15, 15, 15)
+        cont_layout.setSpacing(20)
+
+        # ---------- 1. HPC settings ----------
+        hpc_group = QGroupBox("Hyper-parameter Search (HPC)")
+        hpc_form  = QFormLayout(hpc_group)
+
+        # Dataset folder
+        self.dataset_combo = QComboBox()
+        self.dataset_combo.addItems(["cleaned_data", "unprocessed_data", "augmented_data"])
+        hpc_form.addRow("Dataset Folder:", self.dataset_combo)
+
+        # Model-variant check-boxes  ← lpconv added
+        self.model_ck_binary      = QCheckBox("binary")
+        self.model_ck_simple      = QCheckBox("simple")
+        self.model_ck_threeclass  = QCheckBox("threeclass")
+        self.model_ck_lpconv      = QCheckBox("lpconv")       # NEW
+        self.model_ck_transfer    = QCheckBox("transfer")
+
+        model_ck_layout = QHBoxLayout()
+        for ck in (
+            self.model_ck_binary,
+            self.model_ck_simple,
+            self.model_ck_threeclass,
+            self.model_ck_lpconv,       # NEW
+            self.model_ck_transfer,
+        ):
+            model_ck_layout.addWidget(ck)
+        hpc_form.addRow(QLabel("Model Variants:"), model_ck_layout)
+
+        # … (the remainder of _build_ui is **unchanged**)
+
+
+        # Classic HPC hyper-params
+        self.dropout_edit = QLineEdit("0.0,0.3")
+        self.wdec_edit    = QLineEdit("0.0,0.0001")
+        self.es_edit      = QLineEdit("0,3")
+        self.cw_edit      = QLineEdit("False,True")
+
+        hpc_form.addRow("Dropout List:",      self.dropout_edit)
+        hpc_form.addRow("Weight Decay List:", self.wdec_edit)
+        hpc_form.addRow("Early-stop List:",   self.es_edit)
+        hpc_form.addRow("Class-weight List:", self.cw_edit)
+
+        self.batch_spin    = QSpinBox(); self.batch_spin.setRange(1,512); self.batch_spin.setValue(16)
+        self.lr_edit       = QLineEdit("0.001")
+        self.mini_epoch_spin = QSpinBox(); self.mini_epoch_spin.setRange(1,20); self.mini_epoch_spin.setValue(2)
+
+        hpc_form.addRow("Batch Size:",         self.batch_spin)
+        hpc_form.addRow("Learning Rate:",      self.lr_edit)
+        hpc_form.addRow("Mini-epochs (HPC):",  self.mini_epoch_spin)
+
+        # Transfer-learning specific widgets (enabled when ck_transfer ticked)
+        self.transferlearn_model = QComboBox()
+        self.transferlearn_model.addItems(["None", "ResNet18", "EfficientNetB0"])
+        self.transferlearn_mode  = QComboBox()
+        self.transferlearn_mode.addItems(["finetuning", "feature extraction"])
+        hpc_form.addRow("Base Model (TL):", self.transferlearn_model)
+        hpc_form.addRow("TL Mode:",         self.transferlearn_mode)
+
+        # Launch button
+        self.btn_hpc = QPushButton("Run Search")
+        hpc_form.addRow(self.btn_hpc)
+
+        cont_layout.addWidget(hpc_group)
+
+        # ---------- 2. HPC live progress ----------
+        self.hpc_progress = QProgressBar(); self.hpc_progress.setValue(0)
+        self.hpc_log = QTextEdit(); self.hpc_log.setReadOnly(True); self.hpc_log.setMinimumHeight(180)
+
+        cont_layout.addWidget(self.hpc_progress)
+        cont_layout.addWidget(self.hpc_log)
+
+        # Live combo accuracy plot
+        self.hpc_canvas  = MplCanvas(self, width=8, height=4, dpi=100)
+        self.hpc_toolbar = NavigationToolbar(self.hpc_canvas, self)
+        cont_layout.addWidget(QLabel("<b>Current Combo: Train vs Val Acc</b>"))
+        cont_layout.addWidget(self.hpc_canvas)
+        cont_layout.addWidget(self.hpc_toolbar)
+
+        # ---------- 3. HPC results table & charts ----------
+        results_group = QGroupBox("HPC Results Overview")
+        rg_layout = QVBoxLayout(results_group)
+
+        self.hpc_table = QTableWidget()
+        self.hpc_table.setColumnCount(4)
+        self.hpc_table.setHorizontalHeaderLabels(["Rank", "Combo", "Val Acc", "Model?"])
+        self.hpc_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.hpc_table.setMinimumHeight(600)
+        rg_layout.addWidget(self.hpc_table)
+
+        h_btns = QHBoxLayout()
+        self.btn_show_info   = QPushButton("Show Info")
+        self.btn_delete_model= QPushButton("Delete Model")
+        h_btns.addWidget(self.btn_show_info); h_btns.addWidget(self.btn_delete_model)
+        rg_layout.addLayout(h_btns)
+
+        self.hpc_info_text = QTextEdit(); self.hpc_info_text.setReadOnly(True); self.hpc_info_text.setMinimumHeight(240)
+        rg_layout.addWidget(self.hpc_info_text)
+
+        self.hpc_bar_canvas = MplCanvas(self, width=8, height=3, dpi=100)
+        self.hpc_bar_toolbar= NavigationToolbar(self.hpc_bar_canvas, self)
+        rg_layout.addWidget(QLabel("<b>Validation Accuracy</b>"))
+        rg_layout.addWidget(self.hpc_bar_canvas); rg_layout.addWidget(self.hpc_bar_toolbar)
+
+        self.hpc_auc_canvas = MplCanvas(self, width=8, height=3, dpi=100)
+        self.hpc_auc_toolbar= NavigationToolbar(self.hpc_auc_canvas, self)
+        rg_layout.addWidget(QLabel("<b>ROC AUC (binary)</b>"))
+        rg_layout.addWidget(self.hpc_auc_canvas); rg_layout.addWidget(self.hpc_auc_toolbar)
+
+        cont_layout.addWidget(results_group)
+
+        # ---------- 4. Final training ----------
+        final_box = QGroupBox("Final Training (best HPC combo)")
+        final_form = QFormLayout(final_box)
+
+        self.final_epochs_spin = QSpinBox(); self.final_epochs_spin.setRange(1,200); self.final_epochs_spin.setValue(10)
+        self.final_batch_spin  = QSpinBox(); self.final_batch_spin.setRange(1,512); self.final_batch_spin.setValue(32)
+        self.final_lr_edit     = QLineEdit("0.001")
+        self.final_folds_spin  = QSpinBox(); self.final_folds_spin.setRange(1,10); self.final_folds_spin.setValue(1)
+
+        final_form.addRow("Epochs:",   self.final_epochs_spin)
+        final_form.addRow("Batch:",    self.final_batch_spin)
+        final_form.addRow("LR:",       self.final_lr_edit)
+        final_form.addRow("Folds:",    self.final_folds_spin)
+
+        self.btn_final = QPushButton("Train Final Model"); self.btn_final.setEnabled(False)
+        final_form.addRow(self.btn_final)
+        cont_layout.addWidget(final_box)
+
+        self.final_progress = QProgressBar(); self.final_progress.setValue(0)
+        self.final_log = QTextEdit(); self.final_log.setReadOnly(True); self.final_log.setMinimumHeight(100)
+        cont_layout.addWidget(self.final_progress); cont_layout.addWidget(self.final_log)
+
+        self.final_canvas  = MplCanvas(container, width=8, height=4)
+        self.final_toolbar = NavigationToolbar(self.final_canvas, self)
+        cont_layout.addWidget(QLabel("<b>Final Train vs Val Acc</b>"))
+        cont_layout.addWidget(self.final_canvas); cont_layout.addWidget(self.final_toolbar)
+
+        # ConfMat + ROC + metrics
+        final_res_g = QGroupBox("Final Results")
+        fres_layout = QHBoxLayout(final_res_g)
+
+        self.confmat_canvas  = MplCanvas(self, width=4, height=3)
+        self.confmat_toolbar = NavigationToolbar(self.confmat_canvas, self)
+        left = QVBoxLayout()
+        left.addWidget(QLabel("<b>Confusion Matrix</b>"))
+        left.addWidget(self.confmat_canvas); left.addWidget(self.confmat_toolbar)
+        fres_layout.addLayout(left)
+
+        self.roc_canvas  = MplCanvas(self, width=4, height=3)
+        self.roc_toolbar = NavigationToolbar(self.roc_canvas, self)
+        right = QVBoxLayout()
+        right.addWidget(QLabel("<b>ROC Curve</b>"))
+        right.addWidget(self.roc_canvas); right.addWidget(self.roc_toolbar)
+        fres_layout.addLayout(right)
+
+        self.metrics_text = QTextEdit(); self.metrics_text.setReadOnly(True)
+        fres_layout.addWidget(self.metrics_text)
+
+        cont_layout.addWidget(final_res_g)
+
+        # ---------- Finalise ----------
+        scroll.setWidget(container)
+        main_layout.addWidget(scroll)
+        self.setLayout(main_layout)
+
+    # ------------------------------------------------------------------
+    # █████████████████████████  EVENT WIRING  █████████████████████████
+    # ------------------------------------------------------------------
+    def _wire_events(self):
+        self.btn_hpc.clicked.connect(self.on_run_hpc)
+        self.btn_show_info.clicked.connect(self.on_show_hpc_info)
+        self.btn_delete_model.clicked.connect(self.on_delete_model)
+        self.btn_final.clicked.connect(self.on_train_final)
+        self.model_ck_transfer.stateChanged.connect(self._on_transfer_checkbox_changed)
+
+    # ------------------------------------------------------------------
+    # █████████████████████████  TRANSFER-LEARNING UI LOGIC  ███████████
+    # ------------------------------------------------------------------
+    def _on_transfer_checkbox_changed(self, state):
+        """
+        Enable/disable the TL controls and (optionally) grey-out the
+        classic variant check-boxes – now also includes lpconv.
+        """
+        enabled = state == Qt.Checked
+        self.transferlearn_model.setEnabled(enabled)
+        self.transferlearn_mode.setEnabled(enabled)
+
+        # Grey-out all non-TL variants
+        for ck in (
+            self.model_ck_binary,
+            self.model_ck_simple,
+            self.model_ck_threeclass,
+            self.model_ck_lpconv,       # NEW
+        ):
+            ck.setEnabled(not enabled)
+
+
+    # ------------------------------------------------------------------
+    # █████████████████████████  RUN BUTTON  ███████████████████████████
+    # ------------------------------------------------------------------
     def on_run_hpc(self):
+        # -------- UI reset (identical) --------
         self.hpc_log.clear()
         self.hpc_progress.setValue(0)
         self.hpc_info_text.clear()
@@ -761,11 +719,40 @@ class AutoSearchTab(QWidget):
         self._plot_hpc_combo_chart()
         self._plot_hpc_auc_chart()
 
+        # -------- Basic checks (identical) ----
         data_root = self.dataset_combo.currentText().strip()
         if not os.path.isdir(data_root):
-            QMessageBox.warning(self, "Invalid Folder", f"'{data_root}' is not valid.")
+            QMessageBox.warning(self, "Dataset error", f"Folder '{data_root}' not found.")
+            return
+        batch_size = self.batch_spin.value()
+        try:
+            lr = float(self.lr_edit.text())
+        except ValueError:
+            QMessageBox.warning(self, "LR error", "Learning-rate must be a float.")
+            return
+        mini_epochs = self.mini_epoch_spin.value()
+
+        transfer_selected = self.model_ck_transfer.isChecked()
+
+        # ------------------------------------------------------------------
+        # TL path (unchanged)
+        # ------------------------------------------------------------------
+        if transfer_selected:
+            if self.transferlearn_model.currentText() == "None":
+                QMessageBox.warning(self, "Transfer-learning",
+                                    "Please choose a base model (not 'None').")
+                return
+            self._run_transfer_learning(
+                data_root=data_root,
+                batch_size=batch_size,
+                lr=lr,
+                num_epochs=mini_epochs
+            )
             return
 
+        # ------------------------------------------------------------------
+        # Standard HPC path – now includes lpconv
+        # ------------------------------------------------------------------
         chosen_models = []
         if self.model_ck_binary.isChecked():
             chosen_models.append("binary")
@@ -773,95 +760,51 @@ class AutoSearchTab(QWidget):
             chosen_models.append("simple")
         if self.model_ck_threeclass.isChecked():
             chosen_models.append("threeclass")
+        if self.model_ck_lpconv.isChecked():            # NEW
+            chosen_models.append("lpconv")
+
         if not chosen_models:
-            QMessageBox.warning(self, "No Models", "Please check at least one model variant.")
+            QMessageBox.warning(
+                self,
+                "No model variant",
+                "Tick at least one model variant or select transfer-learning.",
+            )
             return
 
-        def parse_csv_floats(text):
-            res = []
-            for t in text.split(","):
-                t = t.strip()
-                try:
-                    val = float(t)
-                    res.append(val)
-                except:
-                    pass
-            return res
+        # … (parsing of CSV hyper-params & launching HPC worker is unchanged)
 
-        def parse_csv_ints(text):
-            res = []
-            for t in text.split(","):
-                t = t.strip()
-                try:
-                    val = int(t)
-                    res.append(val)
-                except:
-                    pass
-            return res
+        # Parse CSV helpers ------------
+        def csv_floats(text):
+            vals = []
+            for s in text.split(","):
+                try: vals.append(float(s.strip()))
+                except: pass
+            return vals
+        def csv_ints(text):
+            vals = []
+            for s in text.split(","):
+                try: vals.append(int(s.strip()))
+                except: pass
+            return vals
+        def csv_bools(text):
+            vals = []
+            for s in text.split(","):
+                s = s.strip().lower()
+                if s in ("true", "1"):   vals.append(True)
+                elif s in ("false", "0"): vals.append(False)
+            return vals
 
-        def parse_csv_bools(text):
-            res = []
-            for t in text.split(","):
-                t = t.strip().lower()
-                if t in ("true","1"):
-                    res.append(True)
-                elif t in ("false","0"):
-                    res.append(False)
-            return res
-
-        dropout_list = parse_csv_floats(self.dropout_edit.text())
-        wdec_list = parse_csv_floats(self.wdec_edit.text())
-        es_list = parse_csv_ints(self.es_edit.text())
-        cw_list = parse_csv_bools(self.cw_edit.text())
+        dropout_list = csv_floats(self.dropout_edit.text())
+        wdec_list    = csv_floats(self.wdec_edit.text())
+        es_list      = csv_ints(self.es_edit.text())
+        cw_list      = csv_bools(self.cw_edit.text())
 
         if not (dropout_list and wdec_list and es_list and cw_list):
-            QMessageBox.critical(self, "Input Error", "One of the HPC lists is empty or invalid.")
+            QMessageBox.critical(self, "Input error",
+                                 "HPC parameter lists must not be empty.")
             return
 
-        batch_size = self.batch_spin.value()
-        try:
-            lr = float(self.lr_edit.text().strip())
-        except:
-            QMessageBox.critical(self, "LR Error", "LR must be float.")
-            return
-
-        mep = self.mini_epoch_spin.value()
-        print(self.transferlearn_model.currentText())
-        if self.transferlearn_model.currentText() != "None":
-            from src.transfer_learning import transfer_learning
-            tf = transfer_learning(batch_size=bs,num_epochs=mep,lr=lr,data_root=root_dir,disable_augment=disaug_list,adv_aug=advaug_list)
-            tf.epoch_msg.connect(self._on_hpc_log)
-            os.makedirs("hpc_checkpoints", exist_ok=True)
-            if self.transferlearn_mode.currentText() == "finetuning":
-                finetuned=tf.finetuning(mode=model_list[0])
-                torch.save(finetuned, os.path.join("hpc_checkpoints", f"finetuned_resnet18.pth"))
-            elif self.transferlearn_mode.currentText() == "feature extraction":
-                feat_extracted=tf.feat_extractor(mode=model_list[0])
-                torch.save(feat_extracted, os.path.join("hpc_checkpoints", f"feat_extracted_resnet18.pth"))
-        else:
-            from .auto_search_tab import HPCSearchWorker
-            self.hpc_worker = HPCSearchWorker()
-            self.hpc_worker.setup_hpc(
-                data_root=root_dir,
-                model_variants=model_list,
-                resize_list=resize_list,
-                disable_aug_list=disaug_list,
-                adv_aug_list=advaug_list,
-                dropout_list=do_list,
-                weight_decay_list=wdec_list,
-                earlystop_list=es_list,
-                class_weight_list=cw_list,
-                batch_size=bs,
-                lr=lr,
-                mini_epochs=mep,
-                device="cuda" if torch.cuda.is_available() else "cpu"
-            )
-            self.hpc_worker.progress.connect(self._on_hpc_progress)
-            self.hpc_worker.log_msg.connect(self._on_hpc_log)
-            self.hpc_worker.combo_epoch_update.connect(self._on_hpc_combo_epoch)
-            self.hpc_worker.finished.connect(self._on_hpc_finished)
-
-        from .auto_search_tab import HPCSearchWorker
+        # Launch worker ---------------
         self.hpc_worker = HPCSearchWorker()
         self.hpc_worker.setup_hpc(
             data_root=data_root,
@@ -872,8 +815,8 @@ class AutoSearchTab(QWidget):
             class_weight_list=cw_list,
             batch_size=batch_size,
             lr=lr,
-            mini_epochs=mep,
-            device="cuda" if torch.cuda.is_available() else "cpu"
+            mini_epochs=mini_epochs,
+            device=("cuda" if torch.cuda.is_available() else "cpu")
         )
         self.hpc_worker.progress.connect(self._on_hpc_progress)
         self.hpc_worker.log_msg.connect(self._on_hpc_log)
@@ -883,74 +826,113 @@ class AutoSearchTab(QWidget):
         self.btn_hpc.setEnabled(False)
         self.hpc_worker.start()
 
-    def _on_hpc_progress(self, val):
-        self.hpc_progress.setValue(val)
+    # ------------------------------------------------------------------
+    def _run_transfer_learning(self, data_root, batch_size, lr, num_epochs):
+        """
+        Executes transfer-learning outside the grid search.
+        The helper `transfer_learning` no longer needs `disable_augment`
+        or `adv_aug` flags.
+        """
+        base_model = self.transferlearn_model.currentText()
+        mode       = self.transferlearn_mode.currentText()
 
-    def _on_hpc_log(self, msg):
-        self.hpc_log.append(msg)
+        self.hpc_log.append(f"*** Transfer-learning: {base_model} ({mode}) ***")
+        self.hpc_progress.setValue(0)
+        self.btn_hpc.setEnabled(False)
+
+        try:
+            from src.transfer_learning import transfer_learning
+            tl_runner = transfer_learning(
+                data_root=data_root,
+                batch_size=batch_size,
+                num_epochs=num_epochs,
+                lr=lr,
+                model_name=base_model,
+            )
+            tl_runner.epoch_msg.connect(self._on_hpc_log)
+            os.makedirs("hpc_checkpoints", exist_ok=True)
+
+            if mode == "finetuning":
+                state_dict, val_acc = tl_runner.finetuning()
+                tag = "finetune"
+            else:
+                state_dict, val_acc = tl_runner.feat_extractor()
+                tag = "feat"
+        except Exception as e:
+            QMessageBox.critical(self, "Transfer-learning failed", str(e))
+            self.btn_hpc.setEnabled(True)
+            return
+
+        # Save checkpoint
+        model_path = os.path.join("hpc_checkpoints", f"TL_{base_model}_{tag}.pth")
+        torch.save(state_dict, model_path)
+        self.hpc_log.append(f"Saved TL model to {model_path}")
+
+        # Record pseudo-combo for the overview table
+        combo_str = f"TL-{base_model} ({tag})"
+        self.all_results.append({
+            "combo_str": combo_str,
+            "val_acc":  val_acc,
+            "model_path": model_path,
+            "model_variant": "transfer",
+            "confmat": None,
+            "roc": None,
+            "metrics": None
+        })
+        save_hpc_results_json(self.all_results)
+
+        self.hpc_progress.setValue(100)
+        self.hpc_log.append("*** Transfer-learning finished ***")
+        self.btn_hpc.setEnabled(True)
+
+        # Refresh UI
+        self._update_hpc_table()
+        self._plot_hpc_combo_chart()
+        self._plot_hpc_auc_chart()
+
+        # Enable final-train button
+        self.best_params_str = combo_str
+        self.btn_final.setEnabled(True)
+
+    # ------------------------------------------------------------------
+    # █████████████████████████  WORKER CALLBACKS  █████████████████████
+    # ------------------------------------------------------------------
+    def _on_hpc_progress(self, val):               self.hpc_progress.setValue(val)
+    def _on_hpc_log(self, msg):                    self.hpc_log.append(msg)
 
     def _on_hpc_combo_epoch(self, combo_idx, epoch_idx, tr_acc, val_acc):
         if combo_idx != self.current_combo_idx:
             self.current_combo_idx = combo_idx
-            self.hpc_train_acc.clear()
-            self.hpc_val_acc.clear()
-
-        self.hpc_train_acc.append(tr_acc)
-        self.hpc_val_acc.append(val_acc)
+            self.hpc_train_acc.clear(); self.hpc_val_acc.clear()
+        self.hpc_train_acc.append(tr_acc); self.hpc_val_acc.append(val_acc)
         self._plot_hpc_training_chart()
 
-    def _plot_hpc_training_chart(self):
-        self.hpc_canvas.figure.clear()
-        ax = self.hpc_canvas.figure.add_subplot(111)
-        ax.set_title("HPC Combo Training (Partial)")
-        ax.set_xlabel("Epoch")
-        ax.set_ylabel("Accuracy (%)")
-        ax.grid(True)
-
-        e_range = range(1, len(self.hpc_train_acc)+1)
-        ax.plot(e_range, self.hpc_train_acc, marker='o', label="Train")
-        ax.plot(e_range, self.hpc_val_acc, marker='s', label="Val")
-        ax.legend()
-
-        self.hpc_canvas.figure.tight_layout()
-        self.hpc_canvas.draw()
-
     def _on_hpc_finished(self):
-        self.hpc_log.append("=== HPC Finished ===")
+        self.hpc_log.append("=== HPC finished ===")
         self.hpc_progress.setValue(100)
         self.btn_hpc.setEnabled(True)
 
         if self.hpc_worker:
-            new_results = self.hpc_worker.all_results
-            best_params_str = self.hpc_worker.best_params_str
-            best_acc = self.hpc_worker.best_acc
+            self.all_results.extend(self.hpc_worker.all_results)
+            # Deduplicate
+            uniq = {}
+            for rec in self.all_results:
+                uniq[(rec["combo_str"], rec["model_path"])] = rec
+            self.all_results = list(uniq.values())
+            save_hpc_results_json(self.all_results)
 
-            old_list = load_hpc_results_json()
-            combined = old_list + new_results
-            deduped = []
-            seen = set()
-            for item in combined:
-                key = (item.get("combo_str",""), item.get("model_path",""))
-                if key not in seen:
-                    seen.add(key)
-                    deduped.append(item)
-
-            self.all_results = deduped
-            self._save_current_hpc_results()
-
-            self.best_params_str = best_params_str
-            self.hpc_log.append(f"Best HPC => {best_params_str} (val_acc ~ {best_acc:.1f}%)")
+            self.best_params_str = self.hpc_worker.best_params_str
+            self.hpc_log.append(f"Best combo: {self.best_params_str}")
+            if self.best_params_str:
+                self.btn_final.setEnabled(True)
 
             self._update_hpc_table()
             self._plot_hpc_combo_chart()
             self._plot_hpc_auc_chart()
-
             self.hpc_updated.emit()
-            if self.best_params_str:
-                self.btn_final.setEnabled(True)
 
         self.hpc_worker = None
-
+        
     def _update_hpc_table(self):
         sorted_list = sorted(self.all_results, key=lambda x: x["val_acc"], reverse=True)
         self.hpc_table.setRowCount(len(sorted_list))
