@@ -27,8 +27,7 @@ class BrainTumorDataset(Dataset):
         self.samples = []
         self.classes = []  # We will fill or define differently per variant
 
-        if self.model_variant == "simple" or self.model_variant == "multi":
-            # 4-class => subfolders: "NoTumor", "Pituitary", "Meningioma", "Glioma"
+        if self.model_variant in ("simple", "multi", "lpconv"):
             # numeric labels => 0=NoTumor, 1=Pituitary, 2=Meningioma, 3=Glioma
             label_map = {
                 "notumor": 0,

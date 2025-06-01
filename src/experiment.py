@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Subset
+import importlib, sys
 
 import numpy as np
 from sklearn.model_selection import KFold
@@ -15,8 +16,19 @@ except ImportError:
 
 from src.dataset import BrainTumorDataset
 from src.transforms_config import create_transform
-from src.models import get_model, SimpleCNN
+import importlib
 
+def _models():
+    """Return the current src.models module (re-imported if it changed)."""
+    if "src.models" in sys.modules:                     # ← reload if cached
+        importlib.reload(sys.modules["src.models"])
+    return importlib.import_module("src.models")
+# thin wrappers so the rest of the file stays unchanged
+def get_model(*args, **kwargs):
+    return _models().get_model(*args, **kwargs)
+
+def SimpleCNN(*args, **kwargs):
+    return _models().SimpleCNN(*args, **kwargs)
 class Experiment:
     """
     An experiment pipeline that can do:
