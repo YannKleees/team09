@@ -19,12 +19,10 @@ import numpy as np
 
 def count_distribution(root_dir):
     """
-    Return a dict:
-      {
-        "Training/ClassA": countA,
-        "Training/ClassB": countB,
-        "Testing/ClassA": ...
-      }
+    Count images per class in the given directory.
+
+    :param root_dir: The root directory to scan.
+    :return: Dict mapping subset/class to image count.
     """
     dist = {}
     if not os.path.isdir(root_dir):
@@ -48,7 +46,24 @@ def count_distribution(root_dir):
 
 class AugmentationWorker(QThread):
     """
-    Bulk augmentation in background, using a single `final_target` for each class.
+    QThread for performing bulk augmentation in the background.
+
+    :param src_root: Path to the source folder.
+    :param dst_root: Path to the destination folder.
+    :param final_target: Target number of images per class.
+    :param rotate_deg: Rotation angle in degrees.
+    :param do_rotate: Whether to apply rotation.
+    :param do_bc: Whether to apply brightness/contrast.
+    :param do_gamma: Whether to apply gamma correction.
+    :param do_flip: Whether to flip images.
+    :param do_perspective: Whether to apply perspective warp.
+    :param do_crop: Whether to apply random cropping.
+    :param b_min: Minimum brightness value.
+    :param b_max: Maximum brightness value.
+    :param c_min: Minimum contrast value.
+    :param c_max: Maximum contrast value.
+    :param g_min: Minimum gamma value.
+    :param g_max: Maximum gamma value.
     """
     progress = pyqtSignal(int, str)
     finished = pyqtSignal(int, list)  # (total_new_images, error_log)
@@ -121,12 +136,12 @@ class AugmentationWorker(QThread):
 
 class QDoubleSpinBoxRange(QDoubleSpinBox):
     """
-    Helper widget for double spin boxes to quickly set:
-      - range
-      - default value
-      - single step
-      - decimals
-      - a tooltip
+    A QDoubleSpinBox with a preset range, step, and tooltip.
+
+    :param minv: Minimum value.
+    :param maxv: Maximum value.
+    :param default: Default value.
+    :param label_name: Tooltip text.
     """
     def __init__(self, minv, maxv, default, label_name="", parent=None):
         super().__init__(parent)
@@ -139,9 +154,9 @@ class QDoubleSpinBoxRange(QDoubleSpinBox):
 
 class AugmentationTab(QWidget):
     """
-    Two subtabs:
-      - Tab 1: Preview (multi-preview)
-      - Tab 2: Bulk Augmentation => each class up to 'final_target'
+    Main panel for data augmentation with two subtabs:
+    - Preview Tab
+    - Bulk Augmentation Tab
     """
     def __init__(self, parent=None):
         super().__init__(parent)
