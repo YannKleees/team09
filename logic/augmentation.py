@@ -106,18 +106,15 @@ def bulk_augment_dataset(
     error_log = []
     total_new_images = 0
 
-    # Gather all subfolders (commonly "Training", "Testing", etc.)
     subsets = []
     for name in os.listdir(src_root):
         s_path = os.path.join(src_root, name)
         if os.path.isdir(s_path):
             subsets.append(name)
 
-    # Prepare lists for each subset & class
     class_info = {}
     total_ops = 0
 
-    # Create the same subsets in dst_root
     for subset in subsets:
         src_subset = os.path.join(src_root, subset)
         dst_subset = os.path.join(dst_root, subset)
@@ -132,15 +129,12 @@ def bulk_augment_dataset(
             dst_cls_dir = os.path.join(dst_subset, cls_)
             os.makedirs(dst_cls_dir, exist_ok=True)
 
-            # Gather all images in src
             src_images = [
                 f for f in os.listdir(src_cls_dir)
                 if f.lower().endswith(('.png', '.jpg', '.jpeg'))
             ]
             base_count = len(src_images)
 
-            # We'll copy them all first => 'base_count' copy ops
-            # Then see how many we need to augment
             needed = max(0, final_target - base_count)
 
             class_key = f"{subset}/{cls_}"

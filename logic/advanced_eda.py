@@ -1,10 +1,10 @@
-# File: logic/advanced_eda.py
+# logic/advanced_eda.py
 
 import os
 import random
 import numpy as np
 from PIL import Image
-import cv2  # For CLAHE if using histogram_equalize
+import cv2
 from PIL import ImageOps
 
 def gather_random_images(root_folder, subfolders, max_samples=200):

@@ -1,4 +1,4 @@
-# File: gui/compare_tab.py
+# gui/compare_tab.py
 
 import os
 import glob
@@ -67,20 +67,15 @@ class CompareTab(QWidget):
         browse_group.setLayout(browse_layout)
         self.layout().addWidget(browse_group)
 
-        # -----------------------------------
-        # ScrollArea to hold the big figure
-        # -----------------------------------
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.layout().addWidget(self.scroll_area)
 
-        # Log area
         self.log_box = QTextEdit()
         self.log_box.setToolTip("Shows which files were found plus info about augmented images.")
         self.log_box.setReadOnly(True)
         self.layout().addWidget(self.log_box)
 
-        # Internals
         self.all_images = []
         self.curr_index = -1
 
@@ -127,7 +122,6 @@ class CompareTab(QWidget):
         curr_image_path = self.all_images[self.curr_index]
         base_name = os.path.basename(curr_image_path)
 
-        # We'll try to locate the same file in the raw, cleaned, and augmented sets
         root_orig = "data/archive/Training"
         root_clean = "cleaned_data/Training"
         root_aug = "augmented_data/Training"
@@ -136,7 +130,6 @@ class CompareTab(QWidget):
         path_clean = self._locate_image(root_clean, base_name)
         aug_paths = self._locate_all_aug_images(root_aug, base_name)
 
-        # Build an ordered list for plotting
         images_and_labels = []
         if path_orig:
             images_and_labels.append((path_orig, "Original"))
@@ -150,7 +143,6 @@ class CompareTab(QWidget):
         fig = new_canvas.figure
 
         if not images_and_labels:
-            # No images found => placeholder
             fig.clear()
             ax = fig.add_subplot(111)
             ax.text(0.5, 0.5, "No matching images found in raw/cleaned/aug sets.", ha='center', va='center')
@@ -164,16 +156,13 @@ class CompareTab(QWidget):
 
         n_images = len(images_and_labels)
 
-        # Fix for older Matplotlib: can't pass 'figsize' into subplots(), so do:
         fig.clear()
         fig.set_size_inches(4*n_images, 6)
         axes = fig.subplots(nrows=2, ncols=n_images)
 
-        # If there's only 1 image, 'axes' won't be 2D => reshape to (2,1)
         if n_images == 1:
             axes = np.array([axes]).reshape(2,1)
 
-        # Helper to color the spines
         def color_spines(ax, color="black", lw=2):
             for spine in ax.spines.values():
                 spine.set_edgecolor(color)
@@ -195,22 +184,18 @@ class CompareTab(QWidget):
             ax_img.axis('off')
             ax_img.set_title(label_str, fontsize=10)
 
-            # Color-code the border
             if label_str.lower().startswith("original"):
                 color_spines(ax_img, "green")
             elif label_str.lower().startswith("clean"):
                 color_spines(ax_img, "blue")
             else:
-                # any "Aug" => orange
                 color_spines(ax_img, "darkorange")
 
-            # Build histogram
             flat = np.array(arr).ravel().astype(np.float32)
             ax_hist.hist(flat, bins=50, color='blue', alpha=0.6)
             ax_hist.set_xlabel("Intensity", fontsize=8)
             ax_hist.set_ylabel("Count", fontsize=8)
 
-            # Compute stats
             mean_val = float(flat.mean())
             std_val = float(flat.std())
             mn_val = float(flat.min())
@@ -227,7 +212,6 @@ class CompareTab(QWidget):
         new_canvas.draw()
         self.scroll_area.setWidget(new_canvas)
 
-        # Update the log box
         self.log_box.clear()
         self.log_box.append(f"<b>Comparing '{base_name}' across sets:</b>")
         self.log_box.append(f"Index {self.curr_index+1}/{len(self.all_images)} in {self.dataset_combo.currentText()}")

@@ -31,7 +31,6 @@ from PyQt5 import QtGui
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from gui.widgets import MplCanvas
 
-# Attempt Grad-CAM variants
 try:
     from pytorch_grad_cam import GradCAM, ScoreCAM, XGradCAM, EigenCAM
     from pytorch_grad_cam import GradCAMPlusPlus as GradCAMPP
@@ -46,14 +45,11 @@ except ImportError:
 
 import numpy as np
 
-# Our inference logic
 from logic.inference import InferenceModel
-# Two-step pipeline that merges best binary + best threeclass
 from logic.inference_two_step import TwoStepDoublePipeline
 
 _HPC_RESULTS_JSON = "hpc_results.json"
 
-# For 4-class "simple" => [0=NoTumor,1=Pituitary,2=Meningioma,3=Glioma]
 CLASS_LABELS_4 = ["notumor", "pituitary", "meningioma", "glioma"]
 
 
@@ -80,9 +76,7 @@ def load_hpc_results_json(path=_HPC_RESULTS_JSON):
         return []
 
 
-########################################################################
 # BatchInferenceWorker
-########################################################################
 class BatchInferenceWorker(QThread):
     """ Threaded batch inference on multiple images or a folder. """
     progress_msg = pyqtSignal(str)
@@ -110,9 +104,8 @@ class BatchInferenceWorker(QThread):
             self.finished_batch.emit([])
 
 
-########################################################################
 # GradCamDialog
-########################################################################
+
 class GradCamDialog(QDialog):
     """ Show multiple Grad-CAM images in a grid, for batch results. """
     def __init__(self, parent=None):
@@ -146,9 +139,7 @@ class GradCamDialog(QDialog):
         self.container_layout.addWidget(lbl_img, row*2+1, col)
 
 
-########################################################################
 # A synthetic two-step "model" that merges best binary + best threeclass
-########################################################################
 class TwoStepModelWrapper:
     """
     A simple wrapper so it acts like 'inference_model' with .predict() / .predict_batch(),
@@ -190,7 +181,6 @@ class TwoStepModelWrapper:
             except Exception as e:
                 results.append({"file":path, "error":f"{e}"})
 
-        # optionally CSV
         if export_csv:
             self._export_results_csv(results, export_csv)
         return results
@@ -211,7 +201,6 @@ class TwoStepModelWrapper:
                 "multi_probs": None
             }
         else:
-            # (pituitary/meningioma/glioma)
             pred_label = res["final_prediction"].lower()
             return {
                 "prediction": f"tumor_subtype_{pred_label}",
@@ -234,9 +223,8 @@ class TwoStepModelWrapper:
             print(f"[WARN] Could not export CSV for two-step: {e}")
 
 
-########################################################################
+
 # InferenceTab
-########################################################################
 class InferenceTab(QWidget):
     """
     InferenceTab that lists HPC combos in a QComboBox, so you can pick
@@ -306,7 +294,6 @@ class InferenceTab(QWidget):
         container_layout.setSpacing(8)
         container_layout.setContentsMargins(10, 10, 10, 10)
 
-        # HPC combos
         hpc_box = QGroupBox("Select HPC Model")
         vb_hpc = QVBoxLayout(hpc_box)
         self.hpc_combos = []  # loaded from JSON
@@ -320,7 +307,6 @@ class InferenceTab(QWidget):
 
         container_layout.addWidget(hpc_box)
 
-        # HPC info collapsible
         self.chk_show_info = QCheckBox("Expand HPC Info (ConfMat, ROC, Metrics)")
         self.chk_show_info.setChecked(False)
         self.chk_show_info.stateChanged.connect(self._toggle_hpc_info)
@@ -359,7 +345,6 @@ class InferenceTab(QWidget):
         container_layout.addWidget(self.info_box)
         self.info_box.hide()
 
-        # Single vs. Batch radio
         mode_box = QGroupBox("Inference Mode")
         hb_mode = QHBoxLayout(mode_box)
         self.radio_single = QRadioButton("Single Image")
@@ -370,7 +355,6 @@ class InferenceTab(QWidget):
         container_layout.addWidget(mode_box)
         self.radio_single.toggled.connect(self._on_mode_changed)
 
-        # Single Inference Box
         self.single_box = QGroupBox("Single Image Inference & Grad-CAM")
         form_s = QFormLayout(self.single_box)
 
@@ -400,7 +384,6 @@ class InferenceTab(QWidget):
 
         container_layout.addWidget(self.single_box)
 
-        # Batch Inference Box
         self.batch_box = QGroupBox("Batch Inference")
         vb_b = QVBoxLayout(self.batch_box)
         h_fb = QHBoxLayout()
@@ -434,7 +417,6 @@ class InferenceTab(QWidget):
 
         container_layout.addWidget(self.batch_box)
 
-        # Results table
         self.results_table = QTableWidget()
         self.results_table.setColumnCount(7)
         self.results_table.setHorizontalHeaderLabels([
@@ -445,7 +427,6 @@ class InferenceTab(QWidget):
         self.results_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         container_layout.addWidget(self.results_table)
 
-        # Batch Grad-CAM area
         self.batch_gradcam_box = QGroupBox("Batch Grad-CAM")
         bg_layout = QFormLayout(self.batch_gradcam_box)
 
@@ -481,26 +462,21 @@ class InferenceTab(QWidget):
         main_layout.addWidget(scroll_area)
         self.setLayout(main_layout)
 
-        # Internals
         self.current_inference_model = None
         self.batch_images = []
         self.batch_worker = None
 
-        # Load HPC combos initially
         self.reload_hpc_combos()
         self.model_combo.currentIndexChanged.connect(self.on_model_changed)
 
         # default mode: single
         self._on_mode_changed()
 
-    #####################################################################
     # HPC combos reloading + building "two-step double" if possible
-    #####################################################################
     def reload_hpc_combos(self):
         combos = load_hpc_results_json()
         self.hpc_combos = combos[:]  # direct copy
 
-        # Attempt to find best "binary" HPC & best "threeclass" HPC
         best_bin = None
         best_bin_acc = 0.0
         best_three = None
@@ -516,10 +492,7 @@ class InferenceTab(QWidget):
                 best_three = c
                 best_three_acc = va
 
-        # If both found, create a synthetic HPC combo for "double_2step"
         if best_bin and best_three:
-            # We'll store a fake combo
-            # val_acc = average of the two or just min. We'll do average for show
             double_acc = (best_bin_acc + best_three_acc)/2.0
             synthetic_combo = {
                 "combo_str": "Double (two-step from best Binary + Threeclass)",
@@ -558,14 +531,11 @@ class InferenceTab(QWidget):
         chosen = self.hpc_combos[row_idx]
         variant = chosen.get("model_variant","multi")
         mpath = chosen.get("model_path","")
-        # If normal HPC combo
         if variant!="double_2step":
-            # normal single HPC checkpoint
             if (not mpath) or (not os.path.isfile(mpath)):
                 self.current_inference_model = None
                 return
 
-            # Attempt parse "resize=XYZ" from combo_str for input_size
             resize_val = 128
             for part in chosen["combo_str"].split(","):
                 part_l = part.strip().lower()
@@ -591,8 +561,6 @@ class InferenceTab(QWidget):
                 self.current_inference_model = None
 
         else:
-            # This is the synthetic two-step combo => build from best binary + best threeclass
-            # We already found them in reload_hpc_combos. Let's do it again quickly:
             combos = load_hpc_results_json()
             best_bin = None
             best_bin_acc = 0.0
@@ -615,7 +583,6 @@ class InferenceTab(QWidget):
                     best_thr = c
 
             if best_bin and best_thr:
-                # parse out the best bin resize
                 for part in best_bin["combo_str"].split(","):
                     pl = part.strip().lower()
                     if "resize=" in pl:
@@ -625,7 +592,6 @@ class InferenceTab(QWidget):
                             best_bin_resize = int(rv)
                         except:
                             pass
-                # parse out the best thr resize
                 for part in best_thr["combo_str"].split(","):
                     pl = part.strip().lower()
                     if "resize=" in pl:
@@ -636,9 +602,6 @@ class InferenceTab(QWidget):
                         except:
                             pass
 
-                # We'll pick the smaller or bigger? We'll just pick 128 or the first
-                # Actually we can pick e.g. best_bin_resize if you want both consistent
-                # For simplicity, pick the bin's resize:
                 chosen_resize = best_bin_resize
 
                 try:
@@ -655,9 +618,8 @@ class InferenceTab(QWidget):
             else:
                 self.current_inference_model = None
 
-    #####################################################################
+    
     # HPC Info
-    #####################################################################
     def _toggle_hpc_info(self, state):
         if state==Qt.Checked:
             self.info_box.show()
@@ -680,7 +642,6 @@ class InferenceTab(QWidget):
             return
 
         combo = self.hpc_combos[row_idx]
-        # If it's our synthetic "double_2step", there's no confmat
         if combo["model_variant"]=="double_2step":
             self.metrics_text.setPlainText("This is a two-step synthetic model. No HPC metrics.")
             self.confmat_canvas.draw()
@@ -691,7 +652,6 @@ class InferenceTab(QWidget):
         roc_ = combo.get("roc",None)
         mets = combo.get("metrics",None)
 
-        # ConfMat
         axc = self.confmat_canvas.figure.add_subplot(111)
         if confmat is not None:
             arr = np.array(confmat, dtype=int)
@@ -723,7 +683,6 @@ class InferenceTab(QWidget):
         self.roc_canvas.figure.tight_layout()
         self.roc_canvas.draw()
 
-        # metrics
         if not mets:
             self.metrics_text.setPlainText("No HPC metrics found.")
         else:
@@ -742,9 +701,7 @@ class InferenceTab(QWidget):
                 lines.append(f"Macro-F1: {macro:.3f}")
             self.metrics_text.setPlainText("\n".join(lines))
 
-    #####################################################################
     # Single vs. Batch
-    #####################################################################
     def _on_mode_changed(self):
         if self.radio_single.isChecked():
             self.single_box.setVisible(True)
@@ -753,9 +710,7 @@ class InferenceTab(QWidget):
             self.single_box.setVisible(False)
             self.batch_box.setVisible(True)
 
-    #####################################################################
     # Single Inference
-    #####################################################################
     def on_browse_single(self):
         dlg = QFileDialog(self, "Select Single Image")
         dlg.setNameFilter("Images (*.png *.jpg *.jpeg)")
@@ -781,10 +736,6 @@ class InferenceTab(QWidget):
             return
 
         try:
-            # We'll do a standard dictionary interpretation
-            # Some two-step logic returns {"prediction":..., "binary_probs":..., etc.}
-            # The single-head logic returns "class_index", ...
-            # We'll unify them in _fill_table_row
             if hasattr(self.current_inference_model, "predict"):
                 res_dict = self.current_inference_model.predict(pil_img)
             else:
@@ -813,10 +764,6 @@ class InferenceTab(QWidget):
         if not path or not os.path.isfile(path):
             QMessageBox.warning(self, "Invalid Image", "Please specify an image for Grad-CAM.")
             return
-
-        # If user selected the synthetic “double_2step,” there's no single CNN to run Grad-CAM on.
-        # We'll just show a message. Or skip.
-        # For demonstration, we detect that variant:
         row_idx = self.model_combo.currentIndex()
         if row_idx>=0 and row_idx<len(self.hpc_combos):
             if self.hpc_combos[row_idx]["model_variant"]=="double_2step":
@@ -824,7 +771,6 @@ class InferenceTab(QWidget):
                 return
 
         try:
-            # We'll do standard GradCAM if the model is single HPC
             cam = self._build_gradcam_variant(method_name="GradCAM", fallback_ok=True)
             if cam is None:
                 QMessageBox.warning(self, "No GradCAM", "No Grad-CAM variant found or final conv not found.")
@@ -851,9 +797,7 @@ class InferenceTab(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Grad-CAM Error", f"Error generating Grad-CAM:\n{e}")
 
-    #####################################################################
     # Batch Inference
-    #####################################################################
     def on_browse_batch_folder(self):
         dlg = QFileDialog(self, "Select Folder for Batch Inference")
         dlg.setFileMode(QFileDialog.Directory)
@@ -912,9 +856,7 @@ class InferenceTab(QWidget):
         self.batch_worker.deleteLater()
         self.batch_worker = None
 
-    #####################################################################
     # Table
-    #####################################################################
     def _fill_table_row(self, row_idx, file_path, res_dict):
         """
         The dictionary might be:
@@ -974,16 +916,13 @@ class InferenceTab(QWidget):
         if "error" in res_dict:
             return pred_lbl, out_probs
 
-        # "double" or two-step => "prediction"
         if "prediction" in res_dict:
-            # e.g. "no_tumor" or "tumor_subtype_pituitary"
             p = res_dict["prediction"].lower()
             binp = res_dict.get("binary_probs",[1.0,0.0])  # just to fill
             if p=="no_tumor":
                 pred_lbl = "notumor"
                 out_probs[0] = float(binp[0])
             else:
-                # tumor_subtype_??? => pituitary,meningioma,glioma
                 if "pituitary" in p:
                     pred_lbl = "pituitary"
                     out_probs[1] = 1.0
@@ -997,37 +936,31 @@ class InferenceTab(QWidget):
         elif "class_index" in res_dict and "probabilities" in res_dict:
             cid = int(res_dict["class_index"])
             probs = res_dict["probabilities"]
-            # handle 2-class, 3-class, or 4-class
             if len(probs)==4:
-                # multi => 0=NoTum,1=Pit,2=Men,3=Gli
                 pred_lbl = CLASS_LABELS_4[cid] if 0<=cid<4 else "unknown"
                 for i in range(4):
                     out_probs[i] = float(probs[i])
             elif len(probs)==2:
-                # binary => 0=NoTum,1=Tumor
                 if cid==0:
                     pred_lbl="notumor"
                     out_probs[0] = float(probs[0])
                 else:
                     pred_lbl="tumor"
-                    out_probs[1] = float(probs[1])  # just place tumor prob in pit slot
+                    out_probs[1] = float(probs[1])
             elif len(probs)==3:
-                # threeclass => 0=Pit,1=Men,2=Gli
                 if cid==0:
                     pred_lbl="pituitary"
                 elif cid==1:
                     pred_lbl="meningioma"
                 else:
                     pred_lbl="glioma"
-                out_probs[1] = float(probs[0])  # pit
-                out_probs[2] = float(probs[1])  # men
-                out_probs[3] = float(probs[2])  # gli
+                out_probs[1] = float(probs[0]) 
+                out_probs[2] = float(probs[1])
+                out_probs[3] = float(probs[2])
 
         return pred_lbl, out_probs
 
-    #####################################################################
     # Batch Grad-CAM
-    #####################################################################
     def on_batch_gradcam(self):
         if GradCAM is None or show_cam_on_image is None:
             QMessageBox.warning(self, "Missing grad-cam", "pytorch-grad-cam is not installed.")
@@ -1036,7 +969,6 @@ class InferenceTab(QWidget):
             QMessageBox.warning(self, "No Model", "No HPC model loaded.")
             return
 
-        # If the user picks the “double_2step” item, we can’t do standard Grad-CAM
         row_idx = self.model_combo.currentIndex()
         if row_idx>=0 and row_idx<len(self.hpc_combos):
             if self.hpc_combos[row_idx]["model_variant"]=="double_2step":
@@ -1101,9 +1033,7 @@ class InferenceTab(QWidget):
         Build a Grad-CAM object for self.current_inference_model.model
         if that model is a single CNN. If it’s not a real HPC single net, return None.
         """
-        # If it's an instance of TwoStepModelWrapper, we have no single net
         if not hasattr(self.current_inference_model,"model"):
-            # Possibly a "double_2step" or something => skip
             return None
 
         model_instance = self.current_inference_model.model

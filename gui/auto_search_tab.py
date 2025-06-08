@@ -20,9 +20,7 @@ from src.experiment import Experiment
 
 _HPC_RESULTS_JSON = "hpc_results.json"
 
-# ------------------------------------------------------------------------------------
 # Helper functions for (de)serialising HPC results
-# ------------------------------------------------------------------------------------
 def _load_existing_hpc_results(self):
     """
     Load any persisted HPC results at start-up, repopulate the table/plots,
@@ -32,12 +30,10 @@ def _load_existing_hpc_results(self):
     if not self.all_results:
         return
 
-    # Refresh the HPC table and charts
     self._update_hpc_table()
     self._plot_hpc_combo_chart()
     self._plot_hpc_auc_chart()
 
-    # Select the best combo by accuracy so we can let the user click "Train Final Model"
     best_rec = max(self.all_results, key=lambda r: r["val_acc"])
     self.best_params_str = best_rec["combo_str"]
     self.btn_final.setEnabled(True)
@@ -66,7 +62,6 @@ def save_hpc_results_json(all_results, path=_HPC_RESULTS_JSON):
                 "tpr": (roc.get("tpr") or []),
                 "auc": roc.get("auc"),
             }
-            # Convert np.ndarrays
             for k in ("fpr", "tpr"):
                 if isinstance(roc[k], np.ndarray):
                     roc[k] = roc[k].tolist()
@@ -116,9 +111,7 @@ def load_hpc_results_json(path=_HPC_RESULTS_JSON):
         })
     return restored
 
-# ------------------------------------------------------------------------------------
-# Worker threads (unchanged)
-# ------------------------------------------------------------------------------------
+# Worker threads
 class HPCSearchWorker(QThread):
     """Grid-search across model variant × dropout × weight-decay × early-stop × class-weight."""
     progress = pyqtSignal(int)
@@ -128,7 +121,6 @@ class HPCSearchWorker(QThread):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        # default values
         self.setup_hpc(
             data_root="cleaned_data", model_variants=[],
             dropout_list=[], weight_decay_list=[],
@@ -166,9 +158,6 @@ class HPCSearchWorker(QThread):
         self.best_params_str = ""
         self.all_results = []
 
-    # ------------------------------------------------------------------------------------
-    # HPCSearchWorker.run
-    # ------------------------------------------------------------------------------------
     def run(self):
         """
         Main grid-search loop.
@@ -254,10 +243,6 @@ class HPCSearchWorker(QThread):
 
 
 
-    # ------------------------------------------------------------------
-    # ------------------------------------------------------------------------------------
-    
-    # ------------------------------------------------------------------------------------
     def _save_current_hpc_results(self):
         """
         Convenience wrapper used by on_delete_model().
@@ -294,7 +279,6 @@ class HPCSearchWorker(QThread):
                     break
         return best_val, best_state, best_confmat, best_roc, best_metrics
 
-    # ------------------------------------------------------------------
     def _cache_result(self, combo_str, model_var, val_acc,
                       confmat, roc, metrics, model_path):
         self.all_results.append({
@@ -319,7 +303,6 @@ class FinalTrainWorker(QThread):
         super().__init__(parent)
         self.setup_final("", "cleaned_data", 10, 32, 1e-3, 1, "cpu")
 
-    # ------------------------------------------------------------------
     def setup_final(self, best_params_str, data_root, epochs,
                     batch, lr, folds, device="cpu"):
         self.best_params_str = best_params_str
@@ -330,14 +313,12 @@ class FinalTrainWorker(QThread):
         self.folds = folds
         self.device = device
 
-    # ------------------------------------------------------------------
     def run(self):
         if not self.best_params_str:
             self.log_msg.emit("Final training aborted: no HPC combo.")
             self.finishedDetailed.emit(0.0, {}, None, {})
             return
 
-        # Parse hyper-parameter string
         pmap = {k.strip(): v.strip() for k, v in
                 (piece.split("=") for piece in self.best_params_str.split(",") if "=" in piece)}
 
@@ -377,13 +358,11 @@ class FinalTrainWorker(QThread):
             self.finishedDetailed.emit(0.0, {}, None, {})
             return
 
-        # Single split or k-fold
         if self.folds <= 1:
             self._run_single_split(exp, estop)
         else:
             self._run_kfold(exp)
 
-    # ------------------------------------------------------------------
     def _run_single_split(self, exp, estop):
         best_val = 0.0
         patience = 0
@@ -409,7 +388,6 @@ class FinalTrainWorker(QThread):
             best_val, exp.final_roc, exp.final_confmat, exp.final_class_metrics
         )
 
-    # ------------------------------------------------------------------
     def _run_kfold(self, exp):
         avg_acc, _, _, _ = exp.run_kfold(self.folds, self.epochs)
         self.log_msg.emit(f"K-fold avg val_acc={avg_acc:.2f}%")
@@ -418,17 +396,9 @@ class FinalTrainWorker(QThread):
             avg_acc, exp.final_roc, exp.final_confmat, exp.final_class_metrics
         )
 
-# ------------------------------------------------------------------------------------
 # Main GUI class
-# ------------------------------------------------------------------------------------
 class AutoSearchTab(QWidget):
-    """
-    End-to-end tab:
-      * Hyper-parameter grid-search (binary / simple / threeclass) **or** transfer-learning.
-      * Final full-run training of the best combo.
-    """
-
-    hpc_updated = pyqtSignal()   # emitted after every grid-search completion
+    hpc_updated = pyqtSignal()
 
     # ------------------------------------------------------------------
     def __init__(self, parent=None):
@@ -453,15 +423,11 @@ class AutoSearchTab(QWidget):
         self.final_confmat_data = None
         self.final_metrics_data = None
 
-        # Load persisted HPC results (if any)
         self._load_existing_hpc_results()
 
-        # Disable TL widgets initially
         self._on_transfer_checkbox_changed(Qt.Unchecked)
 
-    # ------------------------------------------------------------------
-    # █████████████████████████  UI BUILDING  █████████████████████████
-    # ------------------------------------------------------------------
+
     def _load_existing_hpc_results(self):
         """
         Load any persisted HPC results at start-up, repopulate the table/plots,
@@ -471,12 +437,10 @@ class AutoSearchTab(QWidget):
         if not self.all_results:
             return
 
-        # Refresh UI
         self._update_hpc_table()
         self._plot_hpc_combo_chart()
         self._plot_hpc_auc_chart()
 
-        # Pre-select best combo
         best_rec = max(self.all_results, key=lambda r: r["val_acc"])
         self.best_params_str = best_rec["combo_str"]
         self.btn_final.setEnabled(True)
@@ -498,7 +462,6 @@ class AutoSearchTab(QWidget):
         self.hpc_canvas.draw()
 
     def _build_ui(self):
-        # ---------- Main containers ----------
         main_layout = QVBoxLayout(self)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -507,20 +470,17 @@ class AutoSearchTab(QWidget):
         cont_layout.setContentsMargins(15, 15, 15, 15)
         cont_layout.setSpacing(20)
 
-        # ---------- 1. HPC settings ----------
         hpc_group = QGroupBox("Hyper-parameter Search (HPC)")
         hpc_form  = QFormLayout(hpc_group)
 
-        # Dataset folder
         self.dataset_combo = QComboBox()
         self.dataset_combo.addItems(["cleaned_data", "unprocessed_data", "augmented_data"])
         hpc_form.addRow("Dataset Folder:", self.dataset_combo)
 
-        # Model-variant check-boxes  ← lpconv added
         self.model_ck_binary      = QCheckBox("binary")
         self.model_ck_simple      = QCheckBox("simple")
         self.model_ck_threeclass  = QCheckBox("threeclass")
-        self.model_ck_lpconv      = QCheckBox("lpconv")       # NEW
+        self.model_ck_lpconv      = QCheckBox("lpconv")
         self.model_ck_transfer    = QCheckBox("transfer")
 
         model_ck_layout = QHBoxLayout()
@@ -528,16 +488,12 @@ class AutoSearchTab(QWidget):
             self.model_ck_binary,
             self.model_ck_simple,
             self.model_ck_threeclass,
-            self.model_ck_lpconv,       # NEW
+            self.model_ck_lpconv,
             self.model_ck_transfer,
         ):
             model_ck_layout.addWidget(ck)
         hpc_form.addRow(QLabel("Model Variants:"), model_ck_layout)
 
-        # … (the remainder of _build_ui is **unchanged**)
-
-
-        # Classic HPC hyper-params
         self.dropout_edit = QLineEdit("0.0,0.3")
         self.wdec_edit    = QLineEdit("0.0,0.0001")
         self.es_edit      = QLineEdit("0,3")
@@ -556,7 +512,6 @@ class AutoSearchTab(QWidget):
         hpc_form.addRow("Learning Rate:",      self.lr_edit)
         hpc_form.addRow("Mini-epochs (HPC):",  self.mini_epoch_spin)
 
-        # Transfer-learning specific widgets (enabled when ck_transfer ticked)
         self.transferlearn_model = QComboBox()
         self.transferlearn_model.addItems(["None", "ResNet18", "EfficientNetB0"])
         self.transferlearn_mode  = QComboBox()
@@ -564,27 +519,25 @@ class AutoSearchTab(QWidget):
         hpc_form.addRow("Base Model (TL):", self.transferlearn_model)
         hpc_form.addRow("TL Mode:",         self.transferlearn_mode)
 
-        # Launch button
         self.btn_hpc = QPushButton("Run Search")
         hpc_form.addRow(self.btn_hpc)
 
         cont_layout.addWidget(hpc_group)
 
-        # ---------- 2. HPC live progress ----------
+        # HPC live progress
         self.hpc_progress = QProgressBar(); self.hpc_progress.setValue(0)
         self.hpc_log = QTextEdit(); self.hpc_log.setReadOnly(True); self.hpc_log.setMinimumHeight(180)
 
         cont_layout.addWidget(self.hpc_progress)
         cont_layout.addWidget(self.hpc_log)
 
-        # Live combo accuracy plot
         self.hpc_canvas  = MplCanvas(self, width=8, height=4, dpi=100)
         self.hpc_toolbar = NavigationToolbar(self.hpc_canvas, self)
         cont_layout.addWidget(QLabel("<b>Current Combo: Train vs Val Acc</b>"))
         cont_layout.addWidget(self.hpc_canvas)
         cont_layout.addWidget(self.hpc_toolbar)
 
-        # ---------- 3. HPC results table & charts ----------
+        # HPC results table & charts
         results_group = QGroupBox("HPC Results Overview")
         rg_layout = QVBoxLayout(results_group)
 
@@ -616,7 +569,7 @@ class AutoSearchTab(QWidget):
 
         cont_layout.addWidget(results_group)
 
-        # ---------- 4. Final training ----------
+        # Final training
         final_box = QGroupBox("Final Training (best HPC combo)")
         final_form = QFormLayout(final_box)
 
@@ -666,14 +619,10 @@ class AutoSearchTab(QWidget):
 
         cont_layout.addWidget(final_res_g)
 
-        # ---------- Finalise ----------
         scroll.setWidget(container)
         main_layout.addWidget(scroll)
         self.setLayout(main_layout)
-
-    # ------------------------------------------------------------------
-    # █████████████████████████  EVENT WIRING  █████████████████████████
-    # ------------------------------------------------------------------
+    
     def _wire_events(self):
         self.btn_hpc.clicked.connect(self.on_run_hpc)
         self.btn_show_info.clicked.connect(self.on_show_hpc_info)
@@ -681,9 +630,7 @@ class AutoSearchTab(QWidget):
         self.btn_final.clicked.connect(self.on_train_final)
         self.model_ck_transfer.stateChanged.connect(self._on_transfer_checkbox_changed)
 
-    # ------------------------------------------------------------------
-    # █████████████████████████  TRANSFER-LEARNING UI LOGIC  ███████████
-    # ------------------------------------------------------------------
+    
     def _on_transfer_checkbox_changed(self, state):
         """
         Enable/disable the TL controls and (optionally) grey-out the
@@ -693,7 +640,6 @@ class AutoSearchTab(QWidget):
         self.transferlearn_model.setEnabled(enabled)
         self.transferlearn_mode.setEnabled(enabled)
 
-        # Grey-out all non-TL variants
         for ck in (
             self.model_ck_binary,
             self.model_ck_simple,
@@ -703,9 +649,7 @@ class AutoSearchTab(QWidget):
             ck.setEnabled(not enabled)
 
 
-    # ------------------------------------------------------------------
-    # █████████████████████████  RUN BUTTON  ███████████████████████████
-    # ------------------------------------------------------------------
+
     def on_run_hpc(self):
         # -------- UI reset (identical) --------
         self.hpc_log.clear()
@@ -719,7 +663,6 @@ class AutoSearchTab(QWidget):
         self._plot_hpc_combo_chart()
         self._plot_hpc_auc_chart()
 
-        # -------- Basic checks (identical) ----
         data_root = self.dataset_combo.currentText().strip()
         if not os.path.isdir(data_root):
             QMessageBox.warning(self, "Dataset error", f"Folder '{data_root}' not found.")
@@ -734,9 +677,7 @@ class AutoSearchTab(QWidget):
 
         transfer_selected = self.model_ck_transfer.isChecked()
 
-        # ------------------------------------------------------------------
-        # TL path (unchanged)
-        # ------------------------------------------------------------------
+        # TL path
         if transfer_selected:
             if self.transferlearn_model.currentText() == "None":
                 QMessageBox.warning(self, "Transfer-learning",
@@ -750,9 +691,6 @@ class AutoSearchTab(QWidget):
             )
             return
 
-        # ------------------------------------------------------------------
-        # Standard HPC path – now includes lpconv
-        # ------------------------------------------------------------------
         chosen_models = []
         if self.model_ck_binary.isChecked():
             chosen_models.append("binary")
@@ -771,9 +709,7 @@ class AutoSearchTab(QWidget):
             )
             return
 
-        # … (parsing of CSV hyper-params & launching HPC worker is unchanged)
 
-        # Parse CSV helpers ------------
         def csv_floats(text):
             vals = []
             for s in text.split(","):
@@ -804,7 +740,6 @@ class AutoSearchTab(QWidget):
                                  "HPC parameter lists must not be empty.")
             return
 
-        # Launch worker ---------------
         self.hpc_worker = HPCSearchWorker()
         self.hpc_worker.setup_hpc(
             data_root=data_root,
@@ -826,7 +761,6 @@ class AutoSearchTab(QWidget):
         self.btn_hpc.setEnabled(False)
         self.hpc_worker.start()
 
-    # ------------------------------------------------------------------
     def _run_transfer_learning(self, data_root, batch_size, lr, num_epochs):
         """
         Executes transfer-learning outside the grid search.
@@ -863,12 +797,10 @@ class AutoSearchTab(QWidget):
             self.btn_hpc.setEnabled(True)
             return
 
-        # Save checkpoint
         model_path = os.path.join("hpc_checkpoints", f"TL_{base_model}_{tag}.pth")
         torch.save(state_dict, model_path)
         self.hpc_log.append(f"Saved TL model to {model_path}")
 
-        # Record pseudo-combo for the overview table
         combo_str = f"TL-{base_model} ({tag})"
         self.all_results.append({
             "combo_str": combo_str,
@@ -894,9 +826,6 @@ class AutoSearchTab(QWidget):
         self.best_params_str = combo_str
         self.btn_final.setEnabled(True)
 
-    # ------------------------------------------------------------------
-    # █████████████████████████  WORKER CALLBACKS  █████████████████████
-    # ------------------------------------------------------------------
     def _on_hpc_progress(self, val):               self.hpc_progress.setValue(val)
     def _on_hpc_log(self, msg):                    self.hpc_log.append(msg)
 

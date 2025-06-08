@@ -66,12 +66,12 @@ class AugmentationWorker(QThread):
     :param g_max: Maximum gamma value.
     """
     progress = pyqtSignal(int, str)
-    finished = pyqtSignal(int, list)  # (total_new_images, error_log)
+    finished = pyqtSignal(int, list)
 
     def __init__(
         self,
-        src_root,            # <--- add source root
-        dst_root,            # <--- add destination root
+        src_root,            
+        dst_root, 
         final_target=2000,
         rotate_deg=15,
         do_rotate=True,
@@ -182,9 +182,7 @@ class AugmentationTab(QWidget):
         self.worker = None
         self.original_img = None
 
-    # ----------------------------------------------------------------
     # PREVIEW TAB
-    # ----------------------------------------------------------------
     def _create_preview_tab(self):
         preview_widget = QWidget()
         layout = QVBoxLayout(preview_widget)
@@ -345,18 +343,14 @@ class AugmentationTab(QWidget):
         ax.axis('off')
         canvas.draw()
 
-    # ----------------------------------------------------------------
     # BULK AUGMENTATION TAB
-    # ----------------------------------------------------------------
     def _create_bulk_tab(self):
         """
         Wraps the bulk augmentation area in a QScrollArea so it can expand or scroll.
         """
-        # Core widget for the bulk area
         bulk_widget = QWidget()
         layout = QVBoxLayout(bulk_widget)
 
-        # --- Bulk config box
         bulk_box = QGroupBox("Bulk Augmentation Configuration")
         bform = QFormLayout()
 
@@ -453,7 +447,6 @@ class AugmentationTab(QWidget):
         bulk_box.setLayout(bform)
         layout.addWidget(bulk_box)
 
-        # --- Distribution box
         dist_box = QGroupBox("Distribution Dashboard")
         dist_layout = QVBoxLayout(dist_box)
         info_label = QLabel(
@@ -474,7 +467,6 @@ class AugmentationTab(QWidget):
 
         layout.addWidget(dist_box)
 
-        # Wrap everything in a scroll area so it can expand or scroll
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setMinimumHeight(500)  # adjust to taste
@@ -561,17 +553,14 @@ class AugmentationTab(QWidget):
                 self.aug_log.append(e)
 
     def on_show_distribution(self):
-        # Compare distribution from the chosen src folder to the chosen dst folder
         src_folder = self.src_folder_edit.text().strip()
         dst_folder = self.dst_folder_edit.text().strip()
 
         cleaned_dist = count_distribution(src_folder)
         aug_dist = count_distribution(dst_folder)
 
-        # 1) Collect all possible subset/class combos
         all_keys = sorted(set(cleaned_dist.keys()).union(aug_dist.keys()))
 
-        # 2) **New**: Filter out anything that isn't "Training/...".
         all_keys = [k for k in all_keys if k.startswith("Training/")]
 
         cleaned_vals = [cleaned_dist.get(k, 0) for k in all_keys]
@@ -612,7 +601,6 @@ class AugmentationTab(QWidget):
         self.dist_canvas.figure.tight_layout()
         self.dist_canvas.draw()
 
-        # Show logs in the text area if desired:
         self.aug_log.append("<b>Distribution comparison (Training only):</b>")
         for k in all_keys:
             c_val = cleaned_dist.get(k, 0)

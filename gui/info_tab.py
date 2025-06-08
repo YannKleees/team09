@@ -1,4 +1,4 @@
-# File: gui/info_tab.py
+# gui/info_tab.py
 
 import os
 import random
@@ -14,17 +14,14 @@ from PyQt5.QtCore import Qt
 
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 
-# If you’re using your own MplCanvas:
 from gui.widgets import MplCanvas
 
-# Logic modules
 from logic.advanced_eda import (
     gather_random_images,
     collect_resolutions,
     histogram_equalize,
     gather_subset_resolutions
 )
-# Note: Removed imports for detect_poor_quality and augmentation preview.
 
 class InfoTab(QWidget):
     """
@@ -40,19 +37,16 @@ class InfoTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        # Master layout: Use a scroll area to comfortably handle the many sections
         main_layout = QVBoxLayout(self)
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         main_layout.addWidget(scroll_area)
 
-        # Container for all content
         content_widget = QWidget()
         content_layout = QVBoxLayout(content_widget)
         content_layout.setContentsMargins(10, 10, 10, 10)
         content_layout.setSpacing(12)
 
-        # ------------------- Title & Intro -------------------
         title_label = QLabel("<h2>Ultimate Guide & Demonstrations</h2>")
         title_label.setWordWrap(True)
         content_layout.addWidget(title_label)
@@ -65,7 +59,6 @@ class InfoTab(QWidget):
         intro_label.setWordWrap(True)
         content_layout.addWidget(intro_label)
 
-        # ------------------- Overview of Tabs -------------------
         overview_group = QGroupBox("Overview of Other Tabs")
         overview_layout = QVBoxLayout(overview_group)
 
@@ -91,11 +84,9 @@ class InfoTab(QWidget):
 
         content_layout.addWidget(overview_group)
 
-        # ------------------- Analysis Controls -------------------
         controls_box = QGroupBox("Analysis Controls & Settings")
         controls_form = QFormLayout(controls_box)
 
-        # Root folder
         self.root_edit = QLineEdit("data/archive")
         btn_browse = QPushButton("Browse...")
         btn_browse.clicked.connect(self._on_browse_folder)
@@ -104,21 +95,17 @@ class InfoTab(QWidget):
         h_line.addWidget(btn_browse)
         controls_form.addRow("Root Folder:", h_line)
 
-        # Max images
         self.max_images_spin = QSpinBox()
         self.max_images_spin.setRange(1, 1000)
         self.max_images_spin.setValue(200)
         controls_form.addRow("Max Images to Sample:", self.max_images_spin)
 
-        # Removed the poor-quality detection checkbox
 
-        # Resolution bin slider
         self.res_bin_slider = QSlider(Qt.Horizontal)
         self.res_bin_slider.setRange(5, 50)
         self.res_bin_slider.setValue(20)
         controls_form.addRow("Resolution Histogram Bins:", self.res_bin_slider)
 
-        # hist eq image
         self.eq_img_edit = QLineEdit()
         self.eq_img_edit.setPlaceholderText("Optional image for histogram eq; or leave blank for random.")
         eq_btn = QPushButton("Pick...")
@@ -128,14 +115,12 @@ class InfoTab(QWidget):
         eq_h.addWidget(eq_btn)
         controls_form.addRow("Histogram EQ Image:", eq_h)
 
-        # Button to run all demos
         self.run_demos_btn = QPushButton("Run Demos")
         self.run_demos_btn.clicked.connect(self.on_run_demos)
         controls_form.addRow(self.run_demos_btn)
 
         content_layout.addWidget(controls_box)
 
-        # ------------------- Resolution Demo -------------------
         self.res_group = QGroupBox("Resolution Demo")
         res_layout = QVBoxLayout(self.res_group)
 
@@ -150,7 +135,6 @@ class InfoTab(QWidget):
 
         content_layout.addWidget(self.res_group)
 
-        # ------------------- Histogram EQ Demo -------------------
         self.eq_group = QGroupBox("Histogram Equalization Demo")
         eq_layout = QVBoxLayout(self.eq_group)
 
@@ -165,7 +149,6 @@ class InfoTab(QWidget):
 
         content_layout.addWidget(self.eq_group)
 
-        # ------------------- Gamma Demo -------------------
         self.gamma_group = QGroupBox("Gamma Correction Demo")
         gamma_layout = QVBoxLayout(self.gamma_group)
 
@@ -177,7 +160,7 @@ class InfoTab(QWidget):
         gamma_layout.addWidget(gamma_label)
 
         self.gamma_slider = QSlider(Qt.Horizontal)
-        self.gamma_slider.setRange(50, 200)  # 0.5..2.0 scaled by 100
+        self.gamma_slider.setRange(50, 200)
         self.gamma_slider.setValue(100)
         self.gamma_slider.valueChanged.connect(self.on_gamma_slider_changed)
         gamma_layout.addWidget(self.gamma_slider)
@@ -189,7 +172,6 @@ class InfoTab(QWidget):
 
         content_layout.addWidget(self.gamma_group)
 
-        # ------------------- Subset Comparison Demo -------------------
         self.subset_group = QGroupBox("Subset Comparison Demo")
         subset_layout = QVBoxLayout(self.subset_group)
 
@@ -214,10 +196,6 @@ class InfoTab(QWidget):
 
         content_layout.addWidget(self.subset_group)
 
-        # Removed the Augmentation Preview Demo block
-        # Removed the HPC Mini-Demo block
-
-        # ------------------- Log / Output -------------------
         self.log_area = QTextEdit()
         self.log_area.setReadOnly(True)
         content_layout.addWidget(self.log_area)
@@ -236,17 +214,11 @@ class InfoTab(QWidget):
         self.gamma_sample_img = None
         self.selected_eq_image = None
 
-    # -----------------------------------------
-    # Helper: a word-wrapped QLabel
-    # -----------------------------------------
     def _make_label(self, text):
         lbl = QLabel(text)
         lbl.setWordWrap(True)
         return lbl
 
-    # -----------------------------------------
-    # Folder & EQ image pick
-    # -----------------------------------------
     def _on_browse_folder(self):
         dlg = QFileDialog(self, "Select Root Folder")
         dlg.setFileMode(QFileDialog.Directory)
@@ -261,20 +233,15 @@ class InfoTab(QWidget):
             self.eq_img_edit.setText(chosen)
             self.selected_eq_image = chosen
 
-    # -----------------------------------------
-    # “Run Demos” => resolution stats, eq, gamma
-    # -----------------------------------------
     def on_run_demos(self):
         root_folder = self.root_edit.text().strip()
         if not root_folder or not os.path.isdir(root_folder):
             QMessageBox.warning(self, "Invalid Folder", "Please select a valid folder containing images.")
             return
 
-        # Clear logs
         self.log_area.clear()
         self.res_text.clear()
 
-        # Gather random images
         subfolders = ["Training", "Testing"]
         max_imgs = self.max_images_spin.value()
         all_imgs = gather_random_images(root_folder, subfolders, max_samples=max_imgs)
@@ -282,7 +249,6 @@ class InfoTab(QWidget):
             self.log_area.append("No images found in selected folder.")
             return
 
-        # 1) resolution stats
         widths, heights, err_count = collect_resolutions(all_imgs)
         if err_count > 0:
             self.log_area.append(f"Error reading {err_count} images.\n")
@@ -298,11 +264,9 @@ class InfoTab(QWidget):
         else:
             self.res_text.append("No valid images for resolution stats.\n")
 
-        # 2) plot resolution distribution
         bins = self.res_bin_slider.value()
         self._plot_res_distributions(widths, heights, bins)
 
-        # 3) hist eq => pick user-chosen or random
         eq_path = self.eq_img_edit.text().strip()
         if eq_path and os.path.isfile(eq_path):
             self.selected_eq_image = eq_path
@@ -310,7 +274,6 @@ class InfoTab(QWidget):
             self.selected_eq_image = random.choice(all_imgs)
         self._show_hist_eq_demo(self.selected_eq_image)
 
-        # 4) gamma => pick random
         self.gamma_sample_img = random.choice(all_imgs)
         self._update_gamma_demo()
 
