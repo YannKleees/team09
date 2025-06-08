@@ -14,7 +14,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# ─────────────────────  LpConv2d (legacy)  ────────────────────────
 class LpConv2d(nn.Module):
     """
     L_p convolution (mask=exp(-||Σ·δ||^p)) with the final “^p” exponent,
@@ -38,16 +37,13 @@ class LpConv2d(nn.Module):
         self.kernel_size = k
         self.stride, self.padding = stride, padding
 
-        # regular conv weights
         self.weight = nn.Parameter(torch.randn(out_channels, in_channels, *k) * 0.02)
 
-        # mask parameters
         self.p = nn.Parameter(torch.full((out_channels,), p_init))
         sigma_init = sigma_init or (k[0] / 2)
         self.L_diag = nn.Parameter(torch.full((out_channels, 2), 1.0 / sigma_init))
         self.L_off = nn.Parameter(torch.zeros(out_channels, 1))
 
-        # coordinate grid in [0,1], centered
         y = torch.linspace(0, k[0] - 1, k[0]) - (k[0] - 1) / 2
         x = torch.linspace(0, k[1] - 1, k[1]) - (k[1] - 1) / 2
         hy, hx = torch.meshgrid(y, x, indexing="ij")
@@ -68,27 +64,22 @@ class LpConv2d(nn.Module):
         O, kh, kw = self.weight.size(0), *self.kernel_size
         p = torch.clamp(self.p, min=1.0)
 
-        # build covariance Σ = L Lᵀ
         L = torch.zeros(O, 2, 2, device=self.weight.device)
         L[:, 0, 0] = self.L_diag[:, 0]
         L[:, 1, 1] = self.L_diag[:, 1]
         L[:, 1, 0] = self.L_off[:, 0]
         Σ = L @ L.transpose(1, 2)
 
-        # apply Σ to offsets
         δ = torch.einsum("oij,ojhw->oihw", Σ, self.offsets.expand(O, -1, -1, -1))  # [O,2,kh,kw]
 
-        # sum_{c in 2} |δ|^p => shape [O,kh,kw], then ^p again
         lp = torch.zeros(O, kh, kw, device=self.weight.device)
         for o in range(O):
-            # "^(p[o])" again after summation => legacy sharper
             lp[o] = (δ[o].abs() ** p[o]).sum(0) ** p[o]
 
-        m = torch.exp(-lp).unsqueeze(1)  # [O,1,kh,kw]
+        m = torch.exp(-lp).unsqueeze(1)
         assert torch.isfinite(m).all(), "NaNs in Lp mask!"
         return m
 
-    # ----------------------------------------------------------------
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return F.conv2d(
             x,
@@ -98,7 +89,6 @@ class LpConv2d(nn.Module):
         )
 
 
-# ─────────────────────  LpCNN (adaptive)  ─────────────────────────
 class LpCNN(nn.Module):
     """
     2-block LpConv + BN + ReLU + MaxPool => GAP => FC.
@@ -127,7 +117,6 @@ class LpCNN(nn.Module):
         return self.fc(x)
 
 
-# ───────────────── helper: init + param-split ─────────────────────
 def split_lp_parameters(model: nn.Module) -> tuple[list[nn.Parameter], list[nn.Parameter]]:
     """Collects Lp mask parameters vs. normal weights (like your friend did)."""
     mask, weights = [], []

@@ -20,7 +20,6 @@ class BinaryInferenceModel:
             raise FileNotFoundError(f"Binary checkpoint not found: {checkpoint_path}")
         self.device = torch.device(device)
 
-        # Build a "binary" net => get_model("binary", input_size=..., dropout=...)
         self.model, _ = get_model("binary", input_size=input_size, dropout=dropout)
         self.model.to(self.device)
         self.model.eval()
@@ -36,11 +35,11 @@ class BinaryInferenceModel:
     def predict(self, pil_img):
         x = self.transform(pil_img).unsqueeze(0).to(self.device)
         with torch.no_grad():
-            logits = self.model(x)  # shape [1,2]
+            logits = self.model(x)  
             probs = F.softmax(logits, dim=1)[0]
             pred_idx = int(probs.argmax().item())
         return {
-            "prediction": pred_idx,  # 0 => no tumor, 1 => tumor
+            "prediction": pred_idx, 
             "prob": probs.cpu().tolist()
         }
 
@@ -114,16 +113,16 @@ class TwoStepDoublePipeline:
         )
 
     def predict_image(self, pil_img):
-        bin_res = self.binary_model.predict(pil_img)  # {prediction=0 or 1, prob=[pNo, pTumor]}
+        bin_res = self.binary_model.predict(pil_img)
         if bin_res["prediction"] == 0:
-            # No Tumor => done
+
             return {
                 "final_prediction": "NoTumor",
                 "binary_prob": bin_res["prob"],
                 "threeclass_prob": None
             }
         else:
-            # Tumor => check 3-class
+
             three_res = self.three_model.predict(pil_img)
             return {
                 "final_prediction": three_res["prediction_label"],

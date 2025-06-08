@@ -25,7 +25,7 @@ class BrainTumorDataset(Dataset):
             raise FileNotFoundError(f"{self.data_path} does not exist. Please check your folder names.")
 
         self.samples = []
-        self.classes = []  # We will fill or define differently per variant
+        self.classes = []
 
         if self.model_variant in ("simple", "multi", "lpconv"):
             # numeric labels => 0=NoTumor, 1=Pituitary, 2=Meningioma, 3=Glioma
@@ -39,25 +39,19 @@ class BrainTumorDataset(Dataset):
             self._gather_subfolders(label_map)
 
         elif self.model_variant == "binary":
-            # 2-class => NoTumor (0), Tumor (1). We combine pituitary/meningioma/glioma => 1
             self.classes = ["NoTumor", "Tumor"]
             self._gather_binary()
 
         elif self.model_variant == "threeclass":
-                # 3-class => Pituitary=0, Meningioma=1, Glioma=2
                 label_map = {
                     "pituitary": 0,
                     "meningioma": 1,
                     "glioma": 2
                 }
-                # So classes must match label_map order:
                 self.classes = ["Pituitary", "Meningioma", "Glioma"]
                 self._gather_subfolders(label_map)
 
         elif self.model_variant == "double":
-            # For the double-headed net, we still store them as 0..3:
-            #   0=NoTumor, 1=Pituitary, 2=Meningioma, 3=Glioma
-            # The training code decides binary vs. threeclass heads later.
             label_map = {
                 "notumor": 0,
                 "pituitary": 1,
@@ -79,7 +73,6 @@ class BrainTumorDataset(Dataset):
             sf_lower = subf.lower()
             if sf_lower in label_map:
                 label_idx = label_map[sf_lower]
-                # gather .png/.jpg/.jpeg
                 for fname in os.listdir(sf_path):
                     if fname.lower().endswith((".png", ".jpg", ".jpeg")):
                         full_path = os.path.join(sf_path, fname)

@@ -27,7 +27,6 @@ class InferenceModel:
     ):
         self.device = torch.device(device)
 
-        # Build the chosen model
         self.model, _ = get_model(
             model_variant=model_variant,
             input_size=input_size,
@@ -39,12 +38,10 @@ class InferenceModel:
         if not os.path.isfile(checkpoint_path):
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
-        # Load checkpoint
         state = torch.load(checkpoint_path, map_location=self.device)
         self.model.load_state_dict(state)
         self.model_variant = model_variant
 
-        # Build transform (same logic as training)
         self.transform = create_transform(
             image_size=(input_size, input_size),
             augment=False
@@ -74,22 +71,18 @@ class InferenceModel:
         x = self.transform(pil_img).unsqueeze(0).to(self.device)
         with torch.no_grad():
             if self.model_variant == "double":
-                # 1) Binary (NoTumor vs Tumor)
                 out_bin = self.model(x, mode='binary')
                 bin_probs = F.softmax(out_bin, dim=1)[0]  # shape [2]
                 bin_probs_float = [float(p) for p in bin_probs]
                 bin_probs_percent = [f"{p*100:.1f}%" for p in bin_probs_float]
 
-                # Check if tumor (binary index=1)
                 if bin_probs[1] > bin_probs[0]:
-                    # 2) Three-class => Pituitary / Meningioma / Glioma
                     out_3c = self.model(x, mode='threeclass')
                     multi_probs = F.softmax(out_3c, dim=1)[0]  # shape [3]
                     multi_probs_float = [float(p) for p in multi_probs]
                     multi_probs_percent = [f"{p*100:.1f}%" for p in multi_probs_float]
 
                     subtype_idx = multi_probs.argmax().item()
-                    # Tumor labels
                     tumor_labels = ["Pituitary", "Meningioma", "Glioma"]
                     subtype_label = tumor_labels[subtype_idx]
 
@@ -101,7 +94,6 @@ class InferenceModel:
                         "multi_perc": multi_probs_percent
                     }
                 else:
-                    # NoTumor
                     return {
                         "prediction": "NoTumor",
                         "binary_probs": bin_probs_float,
@@ -110,7 +102,6 @@ class InferenceModel:
                         "multi_perc": None
                     }
             else:
-                # Single-head (binary, threeclass, or multi)
                 out = self.model(x)
                 probs = F.softmax(out, dim=1)[0]
                 probs_float = [float(p) for p in probs]
@@ -133,7 +124,6 @@ class InferenceModel:
         - If double => "prediction", "binary_probs", "multi_probs" etc.
         - Otherwise => "class_index", "probabilities".
         """
-        # Gather the file list from either `image_paths` or `folder_path`.
         file_list = []
         if image_paths:
             file_list = list(image_paths)
@@ -141,7 +131,6 @@ class InferenceModel:
             if not os.path.isdir(folder_path):
                 raise ValueError(f"Folder not found: {folder_path}")
             all_files = os.listdir(folder_path)
-            # pick images only
             for f in all_files:
                 ext = f.lower()
                 if ext.endswith(".png") or ext.endswith(".jpg") or ext.endswith(".jpeg"):
@@ -152,7 +141,6 @@ class InferenceModel:
         results = []
         for img_path in file_list:
             if not os.path.isfile(img_path):
-                # skip invalid
                 continue
             try:
                 pil_img = Image.open(img_path).convert('L')
@@ -163,12 +151,10 @@ class InferenceModel:
                 })
                 continue
 
-            # Single predict
             pred_dict = self.predict(pil_img)
             pred_dict["file"] = img_path
             results.append(pred_dict)
 
-        # optionally export CSV
         if export_csv:
             self._export_results_csv(results, export_csv)
 

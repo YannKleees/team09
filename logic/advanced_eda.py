@@ -25,7 +25,6 @@ def gather_random_images(root_folder, subfolders, max_samples=200):
         if not os.path.isdir(subset_path):
             continue
 
-        # 1) Gather images directly in subset_path
         top_level_images = [
             os.path.join(subset_path, f)
             for f in os.listdir(subset_path)
@@ -33,7 +32,6 @@ def gather_random_images(root_folder, subfolders, max_samples=200):
         ]
         imgs.extend(top_level_images)
 
-        # 2) Also gather images in subfolders (like "ClassA")
         for d in os.listdir(subset_path):
             dpath = os.path.join(subset_path, d)
             if os.path.isdir(dpath):
@@ -60,12 +58,10 @@ def gather_all_images_anywhere(root_folder, subfolders):
         if not os.path.isdir(subset_path):
             continue
 
-        # top-level images
         for f in os.listdir(subset_path):
             if f.lower().endswith(('.png', '.jpg', '.jpeg')):
                 imgs.append(os.path.join(subset_path, f))
 
-        # subfolders
         for d in os.listdir(subset_path):
             dpath = os.path.join(subset_path, d)
             if os.path.isdir(dpath):
@@ -146,17 +142,14 @@ def detect_extended_outliers(
                 mean_val = arr.mean()
                 std_val = arr.std()
 
-                # dimension check
                 if w < dimension_threshold or h < dimension_threshold:
                     extended_outliers.append(path)
                     continue
 
-                # variance check
                 if std_val < var_threshold:
                     extended_outliers.append(path)
                     continue
 
-                # brightness check
                 if mean_val < brightness_low or mean_val > brightness_high:
                     extended_outliers.append(path)
                     continue
@@ -183,7 +176,6 @@ def gather_subset_resolutions(root_folder, subsets):
         w_list = []
         h_list = []
 
-        # gather images in sub_path directly
         for fname in os.listdir(sub_path):
             if fname.lower().endswith(('.png', '.jpg', '.jpeg')):
                 fullp = os.path.join(sub_path, fname)
@@ -195,7 +187,6 @@ def gather_subset_resolutions(root_folder, subsets):
                 except:
                     pass
 
-        # gather images in subfolders
         class_list = [
             d for d in os.listdir(sub_path)
             if os.path.isdir(os.path.join(sub_path, d))

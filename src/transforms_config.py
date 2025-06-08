@@ -32,11 +32,9 @@ def create_transform(
     """
     transform_list = []
 
-    # If we're not using advanced augmentation, do a direct Resize
     if not adv_aug:
         transform_list.append(T.Resize(image_size))
 
-    # Mild augmentations
     if augment:
         if rotation_deg > 0:
             transform_list.append(T.RandomRotation(degrees=rotation_deg))
@@ -48,11 +46,9 @@ def create_transform(
                 )
             )
 
-    # If adv_aug is True, we do a RandomResizedCrop
     if adv_aug:
         transform_list.append(T.RandomResizedCrop(size=image_size, scale=(0.8, 1.0)))
 
-    # If strong_aug is True, add perspective warp
     if strong_aug:
         transform_list.append(T.RandomPerspective(distortion_scale=0.2, p=0.5))
     if one_ch_to_three_ch:

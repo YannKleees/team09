@@ -17,12 +17,6 @@ class PreprocessingWorker(QThread):
     resizing, etc. without blocking the UI.
     """
     progress = pyqtSignal(int, str)
-    # We'll now emit 5 items:
-    #  dict -> dist_info
-    #  list -> error_log
-    #  int  -> total_processed
-    #  int  -> dups_removed
-    #  float-> elapsed_sec
     finished = pyqtSignal(dict, list, int, int, float)
 
     def __init__(
@@ -72,7 +66,6 @@ class PreprocessingWorker(QThread):
         except Exception as e:
             msg = f"Error: {str(e)}"
             self.progress.emit(0, msg)
-            # For consistency, pass placeholders if an error occurs:
             self.finished.emit({}, [msg], 0, 0, 0.0)
 
 
@@ -105,11 +98,9 @@ class PreprocessingTab(QWidget):
         doc_label.setWordWrap(True)
         main_layout.addWidget(doc_label)
 
-        # Folder selection group
         folder_box = QGroupBox("Data Folders")
         folder_layout = QFormLayout()
 
-        # Source folder
         self.root_edit = QLineEdit("data/archive")
         self.root_edit.setToolTip("Folder containing 'Training' & 'Testing' subfolders.")
         btn_src_browse = QPushButton("Browse...")
@@ -120,7 +111,6 @@ class PreprocessingTab(QWidget):
         h_src.addWidget(btn_src_browse)
         folder_layout.addRow("Source Folder:", h_src)
 
-        # Output folder
         self.out_edit = QLineEdit("cleaned_data")
         self.out_edit.setToolTip("Destination folder where cleaned data is placed.")
         btn_out_browse = QPushButton("Browse...")
@@ -134,14 +124,12 @@ class PreprocessingTab(QWidget):
         folder_box.setLayout(folder_layout)
         main_layout.addWidget(folder_box)
 
-        # BASIC SETTINGS group
         basic_box = QGroupBox("Basic Settings")
         basic_form = QFormLayout()
 
         self.resize_combo = QLineEdit("128")  # let user type or pick dimension
         basic_form.addRow("Resize (px):", self.resize_combo)
 
-        # Interpolation mode
         from PyQt5.QtWidgets import QComboBox
         self.interp_combo = QComboBox()
         self.interp_combo.addItems(["BILINEAR", "BICUBIC", "LANCZOS"])
@@ -150,14 +138,12 @@ class PreprocessingTab(QWidget):
         basic_box.setLayout(basic_form)
         main_layout.addWidget(basic_box)
 
-        # ADVANCED SETTINGS group
         adv_box = QGroupBox("Advanced")
         adv_form = QFormLayout()
 
         self.dup_chk = QCheckBox("Delete duplicates?")
         self.eq_chk = QCheckBox("Apply Histogram Equalization?")
 
-        # Filter combo
         self.filter_combo = QComboBox()
         self.filter_combo.addItems(["none", "blur", "sharpen"])
         self.filter_combo.setToolTip("Apply blur or sharpen filter to each image")
@@ -166,14 +152,12 @@ class PreprocessingTab(QWidget):
         adv_form.addRow(self.eq_chk)
         adv_form.addRow("Filter Mode:", self.filter_combo)
 
-        # Advanced logging checkbox
         self.adv_log_chk = QCheckBox("Enable Advanced Logging")
         adv_form.addRow(self.adv_log_chk)
 
         adv_box.setLayout(adv_form)
         main_layout.addWidget(adv_box)
 
-        # Action + Progress
         self.btn_preprocess = QPushButton("Start Preprocessing")
         self.btn_preprocess.setToolTip("Copies dataset, optional eq, filtering, duplicates, etc.")
         self.btn_preprocess.clicked.connect(self.on_start_preprocessing)
@@ -184,7 +168,6 @@ class PreprocessingTab(QWidget):
         main_layout.addWidget(self.btn_preprocess)
         main_layout.addWidget(self.progress_bar)
 
-        # Log area
         self.log_box = QTextEdit()
         self.log_box.setToolTip("Distribution info & any errors appear here.")
         self.log_box.setReadOnly(True)
@@ -267,14 +250,11 @@ class PreprocessingTab(QWidget):
         self.progress_bar.setValue(100)
         self.progress_bar.setFormat("Finished")
 
-        # Basic logs always
         self.log_box.append(f"<b>Total images processed:</b> {total_processed}")
 
         if dups_removed > 0:
-            # "in one phrase" => you can keep it short
             self.log_box.append(f"<b>Duplicates removed in one go:</b> {dups_removed}")
 
-        # Display distribution
         if dist_info:
             self.log_box.append("<br><b>Final distribution in output folder:</b>")
             for subset, sub_dict in dist_info.items():
@@ -284,7 +264,6 @@ class PreprocessingTab(QWidget):
                     self.log_box.append(f"   {cls}: {cnt}")
                 self.log_box.append("")
 
-        # Show any errors
         if error_log:
             self.log_box.append("<b>Errors during processing:</b>")
             for e in error_log:
@@ -292,7 +271,6 @@ class PreprocessingTab(QWidget):
 
         self.log_box.append(f"<i>Elapsed time: {elapsed_sec:.2f} seconds</i>\n")
 
-        # If advanced logging is enabled, add extra explanation
         if self.adv_log_chk.isChecked():
             self.log_box.append("<hr><b>Advanced Logging Summary:</b>")
             self.log_box.append("1) We first copied the original dataset structure into the output folder.")

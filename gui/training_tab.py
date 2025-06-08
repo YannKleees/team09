@@ -17,10 +17,9 @@ class TrainingWorker(QThread):
     Worker that can perform normal training or k-fold cross-validation
     in the background. Also collects final confusion matrix & metrics.
     """
-    progress = pyqtSignal(int)           # int => progress bar
-    log_message = pyqtSignal(str)        # str => log area
+    progress = pyqtSignal(int)           
+    log_message = pyqtSignal(str) 
     finished = pyqtSignal(float, dict, dict, dict)   
-    # emits: (final_or_avg_acc, final_roc, final_confmat, class_metrics)
 
     def __init__(
         self,
@@ -46,12 +45,11 @@ class TrainingWorker(QThread):
         self.folds = folds
         self.device = device
 
-        # Storage for final plots
         self.train_acc_list = []
         self.val_acc_list = []
         self.final_roc = {"fpr": None, "tpr": None, "auc": None}
         self.final_confmat = None
-        self.class_metrics = {}  # e.g. { "precision": [...], "recall": [...], "f1": [...] }
+        self.class_metrics = {}
 
     def run(self):
         try:
@@ -65,16 +63,15 @@ class TrainingWorker(QThread):
                 device=self.device,
                 input_size=self.resize_val,
                 normalization=self.normalization,
-                folds=self.folds  # new param
+                folds=self.folds  
             )
-            exp.set_logger(self.log_message.emit)  # forward logs
+            exp.set_logger(self.log_message.emit)
             self.log_message.emit(
                 f"Variant={self.model_variant}, strong_aug={self.strong_aug}, "
                 f"resize={self.resize_val}, norm={self.normalization}, folds={self.folds}\n"
             )
 
             if self.folds <= 1:
-                # Normal single-run training
                 self.log_message.emit("Loading data (single-run)...")
                 exp.load_data()
                 final_acc, all_train_acc, all_val_acc = exp.run_single_training(
@@ -83,15 +80,12 @@ class TrainingWorker(QThread):
                 )
                 self.train_acc_list = all_train_acc
                 self.val_acc_list = all_val_acc
-                # gather final ROC, confmat, metrics
                 self.final_roc = exp.final_roc
                 self.final_confmat = exp.final_confmat
                 self.class_metrics = exp.final_class_metrics
                 self.finished.emit(final_acc, self.final_roc, self.final_confmat, self.class_metrics)
             else:
-                # K-Fold cross validation
                 self.log_message.emit(f"Performing {self.folds}-fold cross-validation...")
-                # We do not use progress bar per fold => just approximate
                 total_steps = self.epochs * self.folds
                 step_count = 0
 
@@ -99,14 +93,11 @@ class TrainingWorker(QThread):
                 all_train_acc_over_folds = []
                 all_val_acc_over_folds = []
 
-                # run_kfold returns final confusion matrix (summed) & final metrics (averaged)
                 avg_acc, accum_confmat, avg_metrics, (train_accs_list, val_accs_list) = exp.run_kfold(
                     folds=self.folds,
                     epochs=self.epochs,
                     progress_cb=lambda: self._cv_progress_callback(total_steps, step_count)
                 )
-                # store for final plotting => we just store the last fold's arrays or
-                # we can store the average across folds
                 if train_accs_list:
                     self.train_acc_list = train_accs_list[-1]
                 if val_accs_list:
@@ -114,7 +105,7 @@ class TrainingWorker(QThread):
 
                 self.final_confmat = accum_confmat
                 self.class_metrics = avg_metrics
-                self.final_roc = exp.final_roc  # if anything was set
+                self.final_roc = exp.final_roc
                 self.finished.emit(avg_acc, self.final_roc, self.final_confmat, self.class_metrics)
 
         except Exception as e:
@@ -148,13 +139,9 @@ class TrainingTab(QWidget):
         content_layout = QVBoxLayout(content_widget)
         content_layout.setContentsMargins(10, 10, 10, 10)
 
-        # Title
         title_label = QLabel("<h2>Model Training</h2>")
         content_layout.addWidget(title_label)
 
-        # ---------------------------------------------
-        # BASIC hyperparams group
-        # ---------------------------------------------
         basic_box = QGroupBox("Basic Hyperparams")
         basic_form = QFormLayout()
 
@@ -175,20 +162,16 @@ class TrainingTab(QWidget):
         basic_box.setLayout(basic_form)
         content_layout.addWidget(basic_box)
 
-        # ---------------------------------------------
-        # ADV hyperparams group
-        # ---------------------------------------------
         adv_box = QGroupBox("Advanced Hyperparams")
         adv_form = QFormLayout()
 
         self.resize_edit = QLineEdit("128")
-        self.norm_edit = QLineEdit("zscore")  # or "minmax" or "none"
+        self.norm_edit = QLineEdit("zscore")
         self.variant_combo = QComboBox()
-        # now includes 'transfer' & 'custom' placeholders
         self.variant_combo.addItems(["binary", "multi", "double", "transfer", "custom"])
         self.strong_aug_chk = QCheckBox("Strong Aug?")
 
-        self.folds_spin = QSpinBox()  # cross-validation folds
+        self.folds_spin = QSpinBox() 
         self.folds_spin.setRange(1, 10)
         self.folds_spin.setValue(1)
 
@@ -201,12 +184,10 @@ class TrainingTab(QWidget):
         adv_box.setLayout(adv_form)
         content_layout.addWidget(adv_box)
 
-        # Train Button
         self.btn_train = QPushButton("Train Model (or K-Fold)")
         self.btn_train.clicked.connect(self.on_train)
         content_layout.addWidget(self.btn_train)
 
-        # Progress bar + log
         self.train_progress = QProgressBar()
         self.train_progress.setValue(0)
         self.train_progress.setAlignment(Qt.AlignCenter)
@@ -216,15 +197,14 @@ class TrainingTab(QWidget):
         self.log_edit.setReadOnly(True)
         content_layout.addWidget(self.log_edit)
 
-        # Plot group for Overfitting & ROC
         self.plot_group = QGroupBox("Overfitting Check & ROC Curve")
         plot_layout = QVBoxLayout()
         content_layout.addWidget(self.plot_group)
 
-        self.metric_canvas = MplCanvas(self, width=6, height=4)  # bigger
+        self.metric_canvas = MplCanvas(self, width=6, height=4)
         self.metric_toolbar = NavigationToolbar(self.metric_canvas, self)
 
-        self.roc_canvas = MplCanvas(self, width=6, height=4)     # bigger
+        self.roc_canvas = MplCanvas(self, width=6, height=4)   
         self.roc_toolbar = NavigationToolbar(self.roc_canvas, self)
 
         label_explain = QLabel(
@@ -234,7 +214,6 @@ class TrainingTab(QWidget):
         label_explain.setWordWrap(True)
         plot_layout.addWidget(label_explain)
 
-        # Horizontal layout for the two canvases
         h_plot_layout = QHBoxLayout()
 
         left_widget = QWidget()
@@ -252,7 +231,6 @@ class TrainingTab(QWidget):
         plot_layout.addLayout(h_plot_layout)
         self.plot_group.setLayout(plot_layout)
 
-        # Confusion Matrix group
         self.confmat_group = QGroupBox("Confusion Matrix & Class Metrics")
         cm_layout = QVBoxLayout()
         content_layout.addWidget(self.confmat_group)
@@ -269,14 +247,11 @@ class TrainingTab(QWidget):
 
         self.confmat_group.setLayout(cm_layout)
 
-        # Finally set the content into scroll_area
         scroll_area.setWidget(content_widget)
         main_layout.addWidget(scroll_area)
         self.setLayout(main_layout)
 
-        # Worker reference
         self.worker = None
-        # Data we plot
         self.train_acc_list = []
         self.val_acc_list = []
         self.roc_data = None
@@ -302,7 +277,6 @@ class TrainingTab(QWidget):
         self.log_edit.clear()
         self.train_progress.setValue(0)
 
-        # Launch worker
         self.worker = TrainingWorker(
             epochs=epochs,
             batch_size=batch_size,
@@ -336,11 +310,9 @@ class TrainingTab(QWidget):
         self.confmat_data = confmat
         self.class_metrics = metrics_dict
 
-        # Plot them (train vs. val)
         self.plot_overfitting_check()
         self.plot_roc_curve()
 
-        # Confusion matrix & metrics
         self.plot_confusion_matrix()
         self.show_class_metrics()
 
@@ -351,11 +323,6 @@ class TrainingTab(QWidget):
         Plots train vs. val accuracy across epochs. We read from the worker's logs if desired.
         But for simplicity, let's read from the experiment data stored in worker.
         """
-        # Actually, we didn't store them globally. We can do the same approach
-        # or skip. We'll just do a note:
-        # Because we didn't store them in the final signals,
-        # one approach is to read from worker. Another is "not implemented."
-        # For now, let's clear the figure.
         self.metric_canvas.figure.clear()
         ax = self.metric_canvas.figure.add_subplot(111)
         ax.set_title("Train vs. Val Accuracy (not stored in this example)")
@@ -446,7 +413,6 @@ class TrainingTab(QWidget):
                 f"Class {c}: prec={p:.3f}, rec={r:.3f}, f1={f1:.3f}, support={s}"
             )
 
-        # optionally, we can show micro/macro average if stored
         micro = self.class_metrics.get("micro_f1", None)
         macro = self.class_metrics.get("macro_f1", None)
         if micro is not None:

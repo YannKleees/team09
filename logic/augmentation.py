@@ -143,15 +143,14 @@ def bulk_augment_dataset(
                 "base_count": base_count,
                 "needed": needed
             }
-            total_ops += base_count  # each original is one copy op
-            total_ops += needed      # plus the needed new images
+            total_ops += base_count  
+            total_ops += needed    
 
     if total_ops == 0:
         if progress_callback:
             progress_callback(100, "No images found or no classes in source.")
         return 0, []
 
-    # (i) Copy all originals
     done_ops = 0
 
     def update_progress(msg):
@@ -176,7 +175,6 @@ def bulk_augment_dataset(
                 err_msg = f"[CopyError] {src_path} => {str(e)}"
                 error_log.append(err_msg)
 
-    # (ii) Now do round-robin augmentation where needed
     def build_augment_func():
         def augment_func(pil_img: Image.Image):
             temp = pil_img
@@ -233,7 +231,7 @@ def bulk_augment_dataset(
         idx = 0
         for i in range(needed):
             src_name = src_images[idx]
-            idx = (idx + 1) % base_count  # loop around if needed
+            idx = (idx + 1) % base_count  
             src_path = os.path.join(src_subset, src_name)
             try:
                 with Image.open(src_path).convert('L') as pil_img:

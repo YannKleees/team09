@@ -1,9 +1,6 @@
 import torch
 import torch.nn as nn
 from src.lpconv import LpCNN
-################################################################################
-# Single-branch CNN for any # of classes
-################################################################################
 
 class SimpleCNN(nn.Module):
     """
@@ -40,10 +37,7 @@ class SimpleCNN(nn.Module):
         x = self.classifier(x)
         return x
 
-################################################################################
 # Two‐headed CNN => "double" (binary + 3-class)
-################################################################################
-
 class DoubleHeadCNN(nn.Module):
     """
     A CNN that uses a single shared feature extractor but has two output "heads":
@@ -98,9 +92,8 @@ class DoubleHeadCNN(nn.Module):
         else:
             raise ValueError(f"Invalid mode='{mode}' in DoubleHeadCNN.")
 
-################################################################################
+
 # get_model with new names: "simple" (4-class), "threeclass", "binary", "double"
-################################################################################
 
 def get_model(model_variant, input_size=128, dropout=0.0):
     """

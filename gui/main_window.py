@@ -5,7 +5,6 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import Qt
 
-# Import existing tabs
 from gui.dashboard_tab import DashboardTab
 from gui.preprocessing_tab import PreprocessingTab
 from gui.augmentation_tab import AugmentationTab
@@ -35,22 +34,18 @@ class MainWindow(QMainWindow):
         self.tab_widget = QTabWidget()
         self.tab_widget.setTabPosition(QTabWidget.North)
 
-        # Add tabs
         self.tab_widget.addTab(DashboardTab(), "Dashboard")
         self.tab_widget.addTab(InfoTab(), "Info")
         self.tab_widget.addTab(PreprocessingTab(), "Preprocessing")
         self.tab_widget.addTab(AugmentationTab(), "Augmentation")
         self.tab_widget.addTab(CompareTab(), "Comparison")
 
-        # HPC (AutoSearch)
         self.auto_search_tab = AutoSearchTab()
         self.tab_widget.addTab(self.auto_search_tab, "Auto Search")
 
-        # Inference
         self.inference_tab = InferenceTab()
         self.tab_widget.addTab(self.inference_tab, "Inference")
 
-        # CONNECT HPC's "hpc_updated" => Inference tab reload
         self.auto_search_tab.hpc_updated.connect(self.inference_tab.reload_hpc_combos)
 
         self.setCentralWidget(self.tab_widget)

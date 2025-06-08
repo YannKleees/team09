@@ -3,9 +3,8 @@ import time
 import shutil
 import numpy as np
 from PIL import Image, ImageFilter
-import cv2  # for CLAHE-based histogram eq
+import cv2
 
-# IMPORT the new remove_duplicates_recursively function
 from logic.duplicates import remove_duplicates_recursively
 
 def _adaptive_histogram_equalize(pil_img):
@@ -72,7 +71,6 @@ def preprocess_entire_dataset(
         shutil.rmtree(dst_root, ignore_errors=True)
     os.makedirs(dst_root, exist_ok=True)
 
-    # Step 1: Copy structure
     for subset in subsets:
         src_subset = os.path.join(root_dir, subset)
         dst_subset = os.path.join(dst_root, subset)
@@ -103,7 +101,6 @@ def preprocess_entire_dataset(
                     except Exception as e:
                         error_log.append(f"CopyError: {src_path} => {e}")
 
-    # Step 2: Remove duplicates *recursively* if requested
     if delete_duplicates:
         duplicates = remove_duplicates_recursively(dst_root)
         dups_removed = len(duplicates)
@@ -113,7 +110,6 @@ def preprocess_entire_dataset(
             except OSError:
                 pass
 
-    # Step 3: Process (hist eq, filter, resize) for all images
     all_image_paths = []
     for subset in subsets:
         subset_path = os.path.join(dst_root, subset)
@@ -150,21 +146,16 @@ def preprocess_entire_dataset(
 
         try:
             with Image.open(ipath).convert('L') as im:
-                # hist eq if requested
                 if apply_hist_eq:
                     im = _adaptive_histogram_equalize(im)
-                # blur/sharpen if requested
                 im = apply_filter(im, filter_mode.lower())
-                # resize
                 im = im.resize((resize_val, resize_val), interp_mode)
-                # save
                 im.save(ipath)
                 total_processed += 1
 
         except Exception as e:
             error_log.append(f"ProcessingError: {ipath} => {e}")
 
-    # Step 4: Summarize distribution
     for subset in subsets:
         subset_path = os.path.join(dst_root, subset)
         if os.path.isdir(subset_path):

@@ -66,7 +66,6 @@ def remove_duplicates_recursively(root_dir: str) -> list:
     if not os.path.isdir(root_dir):
         return []
 
-    # 1) Collect all .png/.jpg/.jpeg under root_dir (any depth).
     all_files = []
     for dirpath, dirs, files in os.walk(root_dir):
         for fname in files:
@@ -74,7 +73,6 @@ def remove_duplicates_recursively(root_dir: str) -> list:
                 full_path = os.path.join(dirpath, fname)
                 all_files.append(full_path)
 
-    # 2) Compute hashes and detect duplicates
     hash_dict = {}
     duplicates = []
     for fpath in all_files:

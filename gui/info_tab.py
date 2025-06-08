@@ -329,9 +329,7 @@ class InfoTab(QWidget):
         except Exception as e:
             self.log_area.append(f"Histogram EQ error: {e}\n")
 
-    # -----------------------------------------
     # Gamma Correction
-    # -----------------------------------------
     def on_gamma_slider_changed(self, val):
         if self.gamma_sample_img:
             self._update_gamma_demo()
@@ -356,9 +354,7 @@ class InfoTab(QWidget):
         except Exception as e:
             self.log_area.append(f"Gamma error: {e}\n")
 
-    # -----------------------------------------
     # Subset Comparison
-    # -----------------------------------------
     def on_compare_subsets(self):
         root_folder = self.root_edit.text().strip()
         if not root_folder or not os.path.isdir(root_folder):
@@ -386,7 +382,6 @@ class InfoTab(QWidget):
             return
 
         if len(subs) == 1:
-            # single subset => top: widths, bottom: heights
             ax1 = fig.add_subplot(2, 1, 1)
             wdata = subset_w[subs[0]]
             ax1.hist(wdata, bins=30, alpha=0.6, color='blue')
@@ -397,7 +392,6 @@ class InfoTab(QWidget):
             ax2.hist(hdata, bins=30, alpha=0.6, color='green')
             ax2.set_title(f"{subs[0]} - Heights")
         else:
-            # overlapped
             ax1 = fig.add_subplot(2, 1, 1)
             for s in subs:
                 ax1.hist(subset_w[s], bins=30, alpha=0.4, label=s)

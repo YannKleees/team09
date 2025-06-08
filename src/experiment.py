@@ -7,7 +7,6 @@ import importlib, sys
 import numpy as np
 from sklearn.model_selection import KFold
 
-# For ROC/AUC:
 try:
     from sklearn.metrics import roc_curve, roc_auc_score
     _HAS_SKLEARN = True
@@ -20,10 +19,10 @@ import importlib
 
 def _models():
     """Return the current src.models module (re-imported if it changed)."""
-    if "src.models" in sys.modules:                     # ← reload if cached
+    if "src.models" in sys.modules:     
         importlib.reload(sys.modules["src.models"])
     return importlib.import_module("src.models")
-# thin wrappers so the rest of the file stays unchanged
+
 def get_model(*args, **kwargs):
     return _models().get_model(*args, **kwargs)
 
@@ -75,9 +74,8 @@ class Experiment:
         self.folds = folds
         self.device = torch.device(device)
 
-        self.log_func = print  # default logger
+        self.log_func = print
 
-        # Build transformations (no intensity normalization logic here by default):
         self.transform = create_transform(
             image_size=(input_size, input_size),
             augment=(not disable_augment),
@@ -85,7 +83,6 @@ class Experiment:
             strong_aug=self.strong_aug
         )
 
-        # Build model (placeholder for final #classes logic below)
         self.model, self.num_classes = get_model(
             model_variant=self.model_variant,
             input_size=self.input_size,
@@ -94,13 +91,10 @@ class Experiment:
         self.model.to(self.device)
 
         self.optimizer = None
-        # single-head criterion
         self.criterion = None
-        # double variant => two separate losses
         self.criterion_bin = None
         self.criterion_multi = None
 
-        # final results
         self.final_roc = {"fpr": None, "tpr": None, "auc": None}
         self.final_confmat = None
         self.final_class_metrics = {}
@@ -124,7 +118,6 @@ class Experiment:
             )
             self.test_dataset = None
         else:
-            # Normal single-run
             train_set = BrainTumorDataset(
                 root_dir=self.data_root,
                 subset="Training",
@@ -142,20 +135,17 @@ class Experiment:
             self.train_dataset = train_set
             self.test_dataset = val_set
 
-        # Detect number of classes from the variant
         if self.model_variant == "binary":
             real_num_classes = 2
         elif self.model_variant == "double":
-            real_num_classes = None  # double has separate heads
+            real_num_classes = None
         elif self.model_variant == "threeclass":
             real_num_classes = 3
         else:
-            # "multi" or "simple" => read from dataset
             real_num_classes = len(self.train_dataset.classes)
 
         self.log_func(f"[load_data] Using model_variant='{self.model_variant}'. Detected {real_num_classes} class(es).")
 
-        # If "multi"/"simple", rebuild a single CNN with that # classes
         if self.model_variant in ["multi", "simple"]:
             self.log_func(f"Rebuilding single-head model with {real_num_classes} classes.")
             self.model = SimpleCNN(
@@ -173,14 +163,11 @@ class Experiment:
         )
 
         if self.model_variant == "double":
-            # define 2 losses
             self.criterion_bin = nn.CrossEntropyLoss()
             self.criterion_multi = nn.CrossEntropyLoss()
             return
 
-        # single-head
         if self.use_class_weight:
-            # build class weights from train_dataset freq
             freq = [0]*self.num_classes
             for _, lbl in self.train_dataset.samples:
                 freq[lbl] += 1
@@ -196,9 +183,6 @@ class Experiment:
         else:
             self.criterion = nn.CrossEntropyLoss()
 
-    # ----------------------------------------------------------------
-    # HPC partial training calls `_train_one_epoch()`
-    # ----------------------------------------------------------------
     def _train_one_epoch(self):
         """
         Single epoch training for HPC partial.
@@ -215,31 +199,25 @@ class Experiment:
         best_batch_acc = 0.0
 
         if not hasattr(self, 'train_loader'):
-            # if HPC tries partial training but we haven't loaded sets, do a fallback
             return 0.0, 0.0, 0.0
 
         if self.model_variant == "double":
-            # Train both heads in a single pass
             for images, labels in self.train_loader:
                 images = images.to(self.device)
                 labels = labels.to(self.device)
 
-                # Binary => label=0 => no tumor, else => tumor
                 bin_labels = (labels != 0).long()
 
                 self.optimizer.zero_grad()
 
-                # forward both heads
                 out_bin = self.model(images, mode='binary')
                 out_multi = self.model(images, mode='threeclass')
 
-                # binary loss
                 loss_bin = self.criterion_bin(out_bin, bin_labels)
 
-                # multi => only for tumor images
                 tumor_mask = (labels != 0)
                 if torch.any(tumor_mask):
-                    multi_labels = labels[tumor_mask] - 1  # shift [1->0,2->1,3->2]
+                    multi_labels = labels[tumor_mask] - 1
                     multi_out = out_multi[tumor_mask]
                     loss_multi = self.criterion_multi(multi_out, multi_labels)
                 else:
@@ -253,7 +231,6 @@ class Experiment:
                 total_loss += float(loss) * bs
                 total_samples += bs
 
-                # measure binary accuracy
                 _, bin_preds = torch.max(out_bin, dim=1)
                 batch_correct = (bin_preds == bin_labels).sum().item()
                 total_correct_bin += batch_correct
@@ -295,9 +272,6 @@ class Experiment:
             epoch_acc = 100.0 * total_correct / total_samples if total_samples else 0.0
             return epoch_loss, epoch_acc, best_batch_acc
 
-    # ----------------------------------------------------------------
-    # HPC partial code also calls `_evaluate()` after each epoch
-    # ----------------------------------------------------------------
     def _evaluate(self):
         """
         Evaluate on `self.val_loader`. We'll do a 2x2 confusion matrix for "double"
@@ -313,15 +287,13 @@ class Experiment:
         total_correct = 0
         total_samples = 0
 
-        # confmat size
         if self.model_variant == "binary":
             confmat_dim = 2
         elif self.model_variant == "double":
-            confmat_dim = 2  # we measure binary head's confmat
+            confmat_dim = 2
         elif self.model_variant == "threeclass":
             confmat_dim = 3
         else:
-            # "multi"/"simple"
             confmat_dim = self.num_classes
 
         confmat = torch.zeros(confmat_dim, confmat_dim, dtype=torch.int32, device=self.device)
@@ -334,7 +306,6 @@ class Experiment:
                 labels = labels.to(self.device)
 
                 if self.model_variant == "double":
-                    # evaluate binary head
                     bin_labels = (labels != 0).long()
                     out_bin = self.model(images, mode='binary')
                     probs_bin = nn.functional.softmax(out_bin, dim=1)
@@ -351,7 +322,6 @@ class Experiment:
                     all_scores.extend(probs_bin[:,1].cpu().numpy().tolist())
 
                 else:
-                    # single-head
                     logits = self.model(images)
                     probs = nn.functional.softmax(logits, dim=1)
                     preds = logits.argmax(dim=1)
@@ -426,9 +396,6 @@ class Experiment:
             "macro_f1": macro_f1
         }
 
-    # ----------------------------------------------------------------
-    # K-Fold code (if needed)
-    # ----------------------------------------------------------------
     def run_kfold(self, folds=5, epochs=5, progress_cb=None):
         """
         If folds>1, we only loaded 'Training' as self.train_dataset.
@@ -446,7 +413,6 @@ class Experiment:
 
         for fold_i, (tr_idx, val_idx) in enumerate(kf.split(idx_arr)):
             self.log_func(f"\n--- Fold {fold_i+1}/{folds} ---")
-            # re-init model each fold
             self.model, _ = get_model(
                 model_variant=self.model_variant,
                 input_size=self.input_size,
@@ -525,7 +491,6 @@ class Experiment:
         best_batch_acc = 0.0
 
         if self.model_variant == "double":
-            # e.g. train just the binary head in folds
             for images, labels in loader:
                 images = images.to(self.device)
                 bin_labels = (labels!=0).long()
@@ -549,7 +514,6 @@ class Experiment:
                     best_batch_acc = batch_acc
 
         else:
-            # single-head
             for images, labels in loader:
                 images = images.to(self.device)
                 labels = labels.to(self.device)
