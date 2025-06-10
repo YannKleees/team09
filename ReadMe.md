@@ -51,7 +51,7 @@ This repository implements a **multi-class brain tumor classification** workflow
 Install via:
 ```bash
 pip install -r requirements.txt
-
+```
 ## Main Features
 
 ### A. Preprocessing
