@@ -1,9 +1,7 @@
-# README
-
-## Multi-Class Brain Tumor MRI Classification: A Machine Learning Approach
+## Multi-Class Brain Tumor MRI Classification
 
 **Group Ken9**  
-**Group Members:**  
+**Members:**
 - **Project Leader:** Balázs Ács  
 - **Leader Code 1:** Rayan Atieh  
 - **Leader Code 2:** Valters Eglitis  
@@ -11,81 +9,150 @@
 - **Leader Presentation:** Ole Rotteveel  
 - **Leader Administration:** Yann Klees  
 
-### Introduction
-This project prototype addresses **multi-class brain tumor classification** using MRI data. It aligns with the team’s broader research goals:
+---
 
-“How can machine learning be leveraged to predict and classify brain tumor types from MRI scans, effectively addressing challenges such as image variability and tumor heterogeneity?”*
+## Introduction
 
-Concretely, we handle **four classes**: glioma, meningioma, pituitary tumor, and no tumor. Our pipeline manages the entire **data lifecycle** from raw images to preprocessing, augmentation, and training.
+This repository implements a **multi-class brain tumor classification** workflow on MRI data, specifically recognizing four classes: glioma, meningioma, pituitary tumor, and no tumor. It covers the entire pipeline from **data preprocessing** and **augmentation** to **training** multiple CNN models (custom CNNs and optional transfer learning). The project addresses research questions about preprocessing strategies, data augmentation, hyperparameter search (HPC), and model architectures (LpCNN, ResNet18, etc.).
 
-### Methods & Pipeline
-1. **Data Preprocessing**  
-   - **Copying & Cleaning**: We copy the original dataset into a dedicated `cleaned_data/` folder so the raw data remains untouched.  
-   - **Optional Duplicate Removal**: Identifies and removes duplicates based on file hash checks to ensure unique samples.  
-   - **Resizing**: User-selectable (e.g., `128×128`, `160×160`, `224×224`) for standardizing input size.  
-   - **Normalization**: Either **z-score** (with optional re-scaling to [0..1]) or **min-max** (0..1) to reduce scanner-induced artifacts.
+---
 
-2. **Data Augmentation**  
-   - **Preview Mode**: Quickly test a single image with random rotations, brightness/contrast jitter, gamma corrections, and optional min-max normalization.  
-   - **Bulk Augmentation**: Generate multiple new images, 2–20 copies per image for the entire dataset in `cleaned_data/`, saving results in `augmented_data/`.  
-   - Helps address **RQ2**: “How does data augmentation improve robustness?”
+## Table of Contents
+1. [Environment & Installation](#environment--installation)
+2. [Repository Structure](#repository-structure)
+3. [Main Features](#main-features)
+   - [Preprocessing](#a-preprocessing)
+   - [Augmentation](#b-augmentation)
+   - [Dashboard](#c-dashboard)
+   - [Compare Tab](#d-compare)
+   - [AutoSearch (HPC)](#e-autosearch-hpc)
+   - [Info Tab](#f-info-tab)
+   - [Inference](#g-inference)
+4. [Typical Workflow](#typical-workflow)
+5. [Notebooks](#notebooks)
+6. [Running the GUI](#running-the-gui)
+7. [Next Steps & Limitations](#next-steps--limitations)
+8. [Citation & Acknowledgments](#citation--acknowledgments)
 
-3. **Dashboard & Comparison**  
-   - **Dashboard**: Analyze folder distribution, sample intensities, and plot histograms. Compare different normalization approaches to see how intensities shift.  
-   - **Comparison**: Browse the same image filename across raw vs. cleaned vs. augmented sets side-by-side.
+---
 
-4. **Training**  
-   - **Custom CNN**: A small **PyTorch**-based CNN for demonstration.  
-   - **User Controls**: Epochs, batch size, and learning rate. The training runs in a **QThread** so the GUI remains responsive.  
-   - **Real-time Logs & Progress**: See logs and a progress bar as training proceeds (addresses **RQ3** about hyperparameter setups).
+## Environment & Installation
 
-### Relevance to the Project Plan
-This prototype addresses the **core steps** outlined in our proposal:
+**Recommended versions (Python 3.9+):**
+- `PyTorch 1.13+`, `torchvision 0.14+`
+- `numpy`, `pandas`, `matplotlib`, `seaborn`
+- `sklearn`
+- `pillow` (PIL)
+- `nibabel` (for NIfTI if needed)
+- `PyQt5` (GUI)
+- `tqdm` (for progress bars in notebooks)
 
-- **RQ1** & **RQ2**: Implement standard preprocessing (resizing, normalization) and controlled augmentation.  
-- **Hyperparameter Tuning (RQ3)**: We’ve built a modular CNN training loop that can be extended with hyperparameter searches.  
-- **Performance Monitoring (RQ6)**: We log per-epoch validation accuracy and can add additional metrics (precision, recall, F1).  
-- **Comparison with Transfer Learning (RQ5)**: The code includes a placeholder for a ResNet-based approach, forming the basis for future expansions.
 
-### Next Steps
+Install via:
+```bash
+pip install -r requirements.txt
 
-1. **Implement Transfer Learning (ResNet or other)**
-   - Compare a pre-trained ResNet-based pipeline with the custom CNN to fulfill **RQ5**.
-2. **Advanced Metrics**
-   - Add confusion matrices, per-class F1-scores, and a “Plot Metrics” button.
-3. **Hyperparameter Search**
-   - Automate tuning for learning rate, batch size, and data augmentation parameters.
-4. **Inference GUI**
-   - Possibly add an “Upload & Predict” tab for a final user-facing classification interface.
+## Main Features
 
-### Typical Workflow
+### A. Preprocessing
 
-1. **Preprocessing Tab**  
-   - Copy and optionally remove duplicates  
-   - Choose resize & normalization  
-   - Click “Preprocess.”
+Under **PreprocessingTab** in the GUI:
 
-2. **Augmentation Tab**  
-   - Preview augmentation or generate multiple versions  
-   - Click “Apply Bulk Augmentation.”
+1. Select source (`data/archive`) and destination (e.g. `cleaned_data`) folders.
+2. Optionally remove duplicates by hashing.
+3. Apply histogram equalization (CLAHE), blur, sharpen.
+4. Resize images (e.g. 128×128, 224×224).
+5. Start the process. New images will be saved in `cleaned_data/...`.
 
-3. **Dashboard Tab**  
-   - Inspect distribution & intensity stats  
-   - Compare normalization methods
+### B. Augmentation
 
-4. **Comparison Tab**  
-   - Browse side-by-side images across data folders
+Under **AugmentationTab**:
 
-5. **Training Tab (placeholder)**  
-   - Adjust epochs, batch size, learning rate  
-   - Click “Train Custom CNN.”
+* **Preview**: See a single image with random transforms (rotate, brightness, gamma, flip, etc.).
+* **Bulk**: For each class, create copies up to a target count. E.g. if you set target 2000 and a class has only 500 images, the code randomly applies transformations until that class reaches 2000. Results go into `augmented_data/...`.
 
-### How to Run
-1. **Install dependencies**:
+### C. Dashboard
+
+A read-only **DashboardTab** to view dataset distributions:
+
+* Bar charts of per-class counts.
+* Histograms of pixel intensities.
+* Box plots comparing subsets (Training vs. Testing).
+
+### D. Compare
+
+The **CompareTab** locates the same filename across **raw**, **cleaned**, and **augmented** sets and shows them side-by-side. Great for confirming how an image was transformed.
+
+### E. AutoSearch (HPC)
+
+**auto\_search\_tab.py** does a hyperparameter search:
+
+* Chooses combos of model variant (binary, threeclass, simple), dropout, weight decay, early stopping, class weighting, etc.
+* Trains each combo for “mini-epochs.”
+* Saves best combos in `hpc_results.json`.
+* You can train a final model at full epochs after HPC.
+
+### F. Info Tab
+
+Contains usage instructions, gamma slider demonstrations, histogram eq demos, and an overview of the entire pipeline.
+
+### G. Inference
+
+**inference\_tab.py**:
+
+* Load a model checkpoint (from HPC combos or custom path).
+* Single-Image Inference: predict tumor class. Optional Grad-CAM to visualize important regions.
+* Batch Inference: process a folder of images, optionally exporting to CSV.
+
+
+## Typical Workflow
+
+1. **Preprocessing**
+
+   * Copy raw → cleaned, remove duplicates, apply histogram eq/resizing, etc.
+2. **Augmentation** (if needed)
+
+   * Either preview or generate many random copies to handle class imbalance.
+3. **Dashboard**
+
+   * Check class distributions, intensities, resolution stats.
+4. **Compare**
+
+   * Confirm a single image’s transformations across raw/cleaned/aug.
+5. **AutoSearch**
+
+   * Launch HPC to find a best model variant, dropout, weight decay, etc.
+   * Train a final model with those best hyperparams.
+6. **Inference**
+
+   * Use the final model to classify new images (single or batch).
+   * Optionally visualize with Grad-CAM.
+
+## Notebooks
+
+If you prefer notebooks, see the `notebooks/` folder there we conducted all our experiments for the reserach questions and some dataset experiments.
+
+## Running the GUI
+
+1. Ensure dependencies installed:
+
+   ```bash
    pip install -r requirements.txt
+   ```
+2. Place raw MRI data under `data/archive/Training` / `Testing`.
+3. Run the main GUI:
 
-**1. Prepare Data**  
-Place your raw MRI data under `data/archive` and `data/archive` (or adjust paths in the code). if not already there
+   ```bash
+   python -m gui.main
+   ```
 
-**2. Launch the Application**  
-python main.py
+   or
+
+   ```bash
+   python gui/main.py
+   ```
+## Citation & Acknowledgments
+
+* **Dataset**: [Kaggle Brain Tumor MRI Data](https://www.kaggle.com/datasets/masoudnickparvar/brain-tumor-mri-dataset).
+* **LpConv** idea: Adapted from friend’s code / references in `lpconv.py`.
+* **ResNet** from PyTorch’s [torchvision.models](https://pytorch.org/vision/stable/models.html).
