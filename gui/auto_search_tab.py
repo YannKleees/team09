@@ -15,7 +15,8 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from gui.widgets import MplCanvas
-
+import torchvision
+from torchvision import models
 from src.experiment import Experiment
 
 _HPC_RESULTS_JSON = "hpc_results.json"
@@ -191,20 +192,35 @@ class HPCSearchWorker(QThread):
             self.log_msg.emit(f"\n[{combo_idx + 1}/{total}] {combo_str}")
 
             try:
-                exp = Experiment(
-                    data_root=self.data_root,
-                    model_variant=model_var,
-                    input_size=128,
-                    batch_size=self.batch,
-                    lr=self.lr,
-                    epochs=self.epochs,
-                    dropout=drop,
-                    weight_decay=wdec,
-                    earlystop_patience=estop,
-                    use_class_weight=cw,
-                    device=self.device,
-                    folds=self.folds,
+                if model_var == "lpconv":
+                    exp = Experiment(
+                        data_root=self.data_root,
+                        model_variant=model_var,
+                        batch_size=self.batch,
+                        lr=self.lr,
+                        epochs=self.epochs,
+                        weight_decay=wdec,
+                        earlystop_patience=estop,
+                        use_class_weight=cw,
+                        device=self.device,
+                        folds=self.folds,
                     )
+                else:
+                    exp = Experiment(
+                        data_root=self.data_root,
+                        model_variant=model_var,
+                        input_size=128,
+                        batch_size=self.batch,
+                        lr=self.lr,
+                        epochs=self.epochs,
+                        dropout=drop,
+                        weight_decay=wdec,
+                        earlystop_patience=estop,
+                        use_class_weight=cw,
+                        device=self.device,
+                        folds=self.folds,
+                    )
+
                 exp.set_logger(self.log_msg.emit)
                 exp.load_data()
                 if getattr(exp.train_dataset, "is_empty", False):
@@ -781,7 +797,9 @@ class AutoSearchTab(QWidget):
                 batch_size=batch_size,
                 num_epochs=num_epochs,
                 lr=lr,
-                model_name=base_model,
+                disable_augment=False,
+                adv_aug=False,
+                class_mode="binary"
             )
             tl_runner.epoch_msg.connect(self._on_hpc_log)
             os.makedirs("hpc_checkpoints", exist_ok=True)

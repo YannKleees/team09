@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.optim import lr_scheduler
+import torchvision
 from torchvision import models
 import time
 import os
@@ -15,7 +16,7 @@ class transfer_learning(QObject):
     This class inherits the QObject class from PyQt to allow us to display the training progress in the visual interface.
     """
     epoch_msg = pyqtSignal(str)
-    def __init__(self,batch_size,num_epochs,lr,data_root,disable_augment,adv_aug):
+    def __init__(self, batch_size, num_epochs, lr,data_root, disable_augment, adv_aug,class_mode="simple"):
         """This is a standard __init__ which takes in some variables to be later used in trainging
         
         batch_size: integer which defines how many images to use in one pass of training
@@ -43,16 +44,26 @@ class transfer_learning(QObject):
             strong_aug=False,
             one_ch_to_three_ch=True
         )
+        # pick the proper label scheme
+        if class_mode == "binary":
+            variant = "binary"
+        elif class_mode == "threeclass":
+            variant = "threeclass"
+        else:                       # "simple" / "multi"
+            variant = "simple"
+
         train_set = BrainTumorDataset(
-                root_dir=data_root,
-                subset="Training",
-                transform=self.transform,
-            )
+            root_dir=data_root,
+            subset="Training",
+            transform=self.transform,
+            model_variant=variant
+        )
         val_set = BrainTumorDataset(
-                root_dir=data_root,
-                subset="Testing",
-                transform=self.transform,
-            )
+            root_dir=data_root,
+            subset="Testing",
+            transform=self.transform,
+            model_variant=variant
+        )
         self.train_loader = torch.utils.data.DataLoader(train_set, batch_size=self.batch_size, shuffle=True)
         self.val_loader = torch.utils.data.DataLoader(val_set, batch_size=self.batch_size, shuffle=False)
         self.dataloaders = {
@@ -113,8 +124,8 @@ class transfer_learning(QObject):
                 time_elapsed = time.time() - since
                 self.epoch_msg.emit(f'Training complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s\nBest val Acc: {max_accuracy:4f}')
                 model.load_state_dict(torch.load(best_model_path,weights_only=True))
-        return model
-    def finetuning(self,mode):
+        return model, float(max_accuracy)
+    def finetuning(self, mode="binary"):
         """This is the finetuning method that take a resnet18 model and using our dataset we finetune it to our task
         
         mode: string which if binary is inputed will make the model predict in a binary manner aka is there a tumor or not. Otherwise
@@ -129,8 +140,9 @@ class transfer_learning(QObject):
         criterion = nn.CrossEntropyLoss()
         optimizer_pretrained=optim.SGD(model_pretrained.parameters(), self.lr, momentum=0.9)
         expo_learn_sched = lr_scheduler.StepLR(optimizer_pretrained, step_size=7,gamma=0.1)
-        self.train(model_pretrained,criterion,optimizer_pretrained,expo_learn_sched,self.num_epochs)
-    def feat_extractor(self,mode):
+        trained_model, best_acc = self.train(model_pretrained, criterion, optimizer_pretrained, expo_learn_sched)
+        return trained_model.state_dict(), best_acc    
+    def feat_extractor(self, mode="binary"):
         """This is the feature extraction method that take a resnet18 model and using our dataset we try to extract features from it
 
         mode: string which if binary is inputed will make the model predict in a binary manner aka is there a tumor or not. Otherwise
@@ -147,4 +159,5 @@ class transfer_learning(QObject):
         criterion = nn.CrossEntropyLoss()
         optimizer_pretrained = optim.SGD(model_pretrained.fc.parameters(), self.lr, momentum=0.9)
         expo_learn_sched = lr_scheduler.StepLR(optimizer_pretrained, step_size=7, gamma=0.1)
-        self.train(model_pretrained,criterion,optimizer_pretrained,expo_learn_sched,self.num_epochs)
+        trained_model, best_acc = self.train(model_pretrained,criterion,optimizer_pretrained,expo_learn_sched)
+        return trained_model.state_dict(), best_acc

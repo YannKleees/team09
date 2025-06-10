@@ -116,7 +116,7 @@ def get_model(model_variant, input_size=128, dropout=0.0):
         return DoubleHeadCNN(input_size=input_size, dropout=dropout), None
     
     elif model_variant == "lpconv":
-        return LpCNN(num_classes=4,input_size=input_size,dropout=dropout,in_channels=1), 4
+        return LpCNN(num_classes=4, in_channels=1), 4
     
     else:
         raise ValueError(f"Unknown model variant: {model_variant}")

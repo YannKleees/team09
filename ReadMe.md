@@ -143,13 +143,13 @@ If you prefer notebooks, see the `notebooks/` folder there we conducted all our 
 3. Run the main GUI:
 
    ```bash
-   python -m gui.main
+   python -m main
    ```
 
    or
 
    ```bash
-   python gui/main.py
+   python main.py
    ```
 ## Citation & Acknowledgments
 
